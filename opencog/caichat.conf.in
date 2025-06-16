@@ -1,0 +1,3 @@
+# CAIChat OpenCog Module Configuration
+MODULE_DIR = @CMAKE_INSTALL_PREFIX@/lib/opencog
+SCHEME_DIR = @CMAKE_INSTALL_PREFIX@/share/opencog/scm/caichat
