@@ -71,17 +71,17 @@ public:
      * Load conversation from AtomSpace by ID
      */
     void load_conversation_by_id(const std::string& conversation_id);
+    
+    /**
+     * Convert conversation to vector of messages
+     */
+    std::vector<Message> get_messages();
 
 private:
     AtomSpace* atomspace_;
     std::unique_ptr<LLMClient> client_;
     std::vector<Message> conversation_;
     std::string conversation_id_;
-    
-    /**
-     * Convert conversation to vector of messages
-     */
-    std::vector<Message> get_messages();
 };
 
 } // namespace caichat

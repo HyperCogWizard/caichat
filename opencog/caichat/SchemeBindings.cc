@@ -6,6 +6,7 @@
 
 #include "LLMClient.h"
 #include "ChatCompletion.h"
+#include "SessionManager.h"
 #include <stdexcept>
 #include <ctime>
 #include <map>
@@ -42,6 +43,8 @@ using namespace opencog::caichat;
 // Global client and completion instances
 static std::map<std::string, std::unique_ptr<ChatCompletion>> completions;
 static std::map<std::string, ClientConfig> client_configs;
+static std::unique_ptr<SessionManager> session_manager;
+static std::unique_ptr<NeuralSymbolicBridge> neural_bridge;
 
 /**
  * Create a new LLM client configuration
@@ -241,6 +244,143 @@ SCM caichat_destroy_session(SCM session_id) {
     return SCM_BOOL_F;
 }
 
+/**
+ * Create a persistent session (hypergraph synergy)
+ */
+SCM caichat_create_persistent_session(SCM session_name, SCM provider, SCM model) {
+    if (!session_manager) {
+#ifdef HAVE_OPENCOG
+        AtomSpace* as = get_current_atomspace();
+#else
+        AtomSpace* as = nullptr;
+#endif
+        session_manager = std::make_unique<SessionManager>(as);
+    }
+    
+    std::string session_name_str = scm_to_locale_string(session_name);
+    std::string provider_str = scm_to_locale_string(provider);
+    std::string model_str = scm_to_locale_string(model);
+    
+    try {
+        std::string session_id = session_manager->create_persistent_session(session_name_str, provider_str, model_str);
+        return scm_from_locale_string(session_id.c_str());
+    } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
+        logger().error("Failed to create persistent session: %s", e.what());
+#else
+        std::cerr << "Failed to create persistent session: " << e.what() << std::endl;
+#endif
+        return SCM_BOOL_F;
+    }
+}
+
+/**
+ * Resume a session from hypergraph memory
+ */
+SCM caichat_resume_session(SCM session_name, SCM provider, SCM model) {
+    if (!session_manager) {
+#ifdef HAVE_OPENCOG
+        AtomSpace* as = get_current_atomspace();
+#else
+        AtomSpace* as = nullptr;
+#endif
+        session_manager = std::make_unique<SessionManager>(as);
+    }
+    
+    std::string session_name_str = scm_to_locale_string(session_name);
+    std::string provider_str = scm_to_locale_string(provider);
+    std::string model_str = scm_to_locale_string(model);
+    
+    try {
+        std::string session_id = session_manager->resume_session(session_name_str, provider_str, model_str);
+        return scm_from_locale_string(session_id.c_str());
+    } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
+        logger().error("Failed to resume session: %s", e.what());
+#else
+        std::cerr << "Failed to resume session: " << e.what() << std::endl;
+#endif
+        return SCM_BOOL_F;
+    }
+}
+
+/**
+ * Mediate session (updates hypergraph memory)
+ */
+SCM caichat_mediate_session(SCM session_id) {
+    if (!session_manager) {
+        return SCM_BOOL_F;
+    }
+    
+    std::string session_id_str = scm_to_locale_string(session_id);
+    
+    try {
+        session_manager->mediate_session(session_id_str);
+        return SCM_BOOL_T;
+    } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
+        logger().error("Failed to mediate session: %s", e.what());
+#else
+        std::cerr << "Failed to mediate session: " << e.what() << std::endl;
+#endif
+        return SCM_BOOL_F;
+    }
+}
+
+/**
+ * Audit core modules for spec compliance
+ */
+SCM caichat_audit_core_modules() {
+    if (!session_manager) {
+#ifdef HAVE_OPENCOG
+        AtomSpace* as = get_current_atomspace();
+#else
+        AtomSpace* as = nullptr;
+#endif
+        session_manager = std::make_unique<SessionManager>(as);
+    }
+    
+    try {
+        session_manager->audit_core_modules();
+        return SCM_BOOL_T;
+    } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
+        logger().error("Failed to audit core modules: %s", e.what());
+#else
+        std::cerr << "Failed to audit core modules: " << e.what() << std::endl;
+#endif
+        return SCM_BOOL_F;
+    }
+}
+
+/**
+ * Neural-symbolic bridge function
+ */
+SCM caichat_neural_symbolic_bridge(SCM input) {
+    if (!neural_bridge) {
+#ifdef HAVE_OPENCOG
+        AtomSpace* as = get_current_atomspace();
+#else
+        AtomSpace* as = nullptr;
+#endif
+        neural_bridge = std::make_unique<NeuralSymbolicBridge>(as);
+    }
+    
+    std::string input_str = scm_to_locale_string(input);
+    
+    try {
+        std::string response = neural_bridge->neural_symbolic_bridge(input_str);
+        return scm_from_locale_string(response.c_str());
+    } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
+        logger().error("Neural-symbolic bridge failed: %s", e.what());
+#else
+        std::cerr << "Neural-symbolic bridge failed: " << e.what() << std::endl;
+#endif
+        return SCM_BOOL_F;
+    }
+}
+
 // Initialize the module
 extern "C" void opencog_caichat_init();
 
@@ -262,4 +402,16 @@ void opencog_caichat_init() {
                        (scm_t_subr) caichat_load_conversation);
     scm_c_define_gsubr("caichat-destroy-session", 1, 0, 0, 
                        (scm_t_subr) caichat_destroy_session);
+    
+    // Register new session management and cognitive functions
+    scm_c_define_gsubr("caichat-create-persistent-session", 3, 0, 0, 
+                       (scm_t_subr) caichat_create_persistent_session);
+    scm_c_define_gsubr("caichat-resume-session", 3, 0, 0, 
+                       (scm_t_subr) caichat_resume_session);
+    scm_c_define_gsubr("caichat-mediate-session", 1, 0, 0, 
+                       (scm_t_subr) caichat_mediate_session);
+    scm_c_define_gsubr("caichat-audit-core-modules", 0, 0, 0, 
+                       (scm_t_subr) caichat_audit_core_modules);
+    scm_c_define_gsubr("caichat-neural-symbolic-bridge", 1, 0, 0, 
+                       (scm_t_subr) caichat_neural_symbolic_bridge);
 }

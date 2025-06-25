@@ -56,6 +56,7 @@ set(CAICHAT_SOURCES
     opencog/caichat/LLMClient.cc
     opencog/caichat/ChatCompletion.cc
     opencog/caichat/SchemeBindings.cc
+    opencog/caichat/SessionManager.cc
 )
 
 # Create the library
