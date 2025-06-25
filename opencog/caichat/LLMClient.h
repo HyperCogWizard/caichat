@@ -110,9 +110,99 @@ public:
 };
 
 /**
+ * Gemini (Google) client implementation  
+ */
+class GeminiClient : public LLMClient {
+public:
+    GeminiClient(const ClientConfig& config);
+    
+    std::string chat_completion(const std::vector<Message>& messages) override;
+    void chat_completion_stream(
+        const std::vector<Message>& messages,
+        std::function<void(const std::string&)> callback) override;
+    std::vector<double> embeddings(const std::string& text) override;
+};
+
+/**
+ * Ollama client implementation  
+ */
+class OllamaClient : public LLMClient {
+public:
+    OllamaClient(const ClientConfig& config);
+    
+    std::string chat_completion(const std::vector<Message>& messages) override;
+    void chat_completion_stream(
+        const std::vector<Message>& messages,
+        std::function<void(const std::string&)> callback) override;
+    std::vector<double> embeddings(const std::string& text) override;
+};
+
+/**
+ * Groq client implementation  
+ */
+class GroqClient : public LLMClient {
+public:
+    GroqClient(const ClientConfig& config);
+    
+    std::string chat_completion(const std::vector<Message>& messages) override;
+    void chat_completion_stream(
+        const std::vector<Message>& messages,
+        std::function<void(const std::string&)> callback) override;
+    std::vector<double> embeddings(const std::string& text) override;
+};
+
+/**
  * Factory function to create appropriate client
  */
 std::unique_ptr<LLMClient> create_client(const ClientConfig& config);
+
+/**
+ * Provider Router - implements dynamic provider selection and routing logic
+ */
+class LLMProviderRouter {
+public:
+    struct ProviderCapabilities {
+        bool supports_chat = true;
+        bool supports_streaming = true;
+        bool supports_embeddings = false;
+        bool supports_functions = false;
+        std::vector<std::string> supported_models;
+        double cost_per_token = 0.0;
+        int max_context_length = 4096;
+    };
+    
+    /**
+     * Register a provider with its capabilities
+     */
+    void register_provider(const std::string& provider_name, const ProviderCapabilities& caps);
+    
+    /**
+     * Route LLM request to the best available provider
+     */
+    std::string route_llm_request(const std::vector<Message>& messages, 
+                                  const std::string& preferred_provider = "",
+                                  const std::string& task_type = "chat");
+    
+    /**
+     * Get list of available providers for a specific task
+     */
+    std::vector<std::string> get_available_providers(const std::string& task_type = "chat");
+    
+    /**
+     * Initialize with default provider configurations
+     */
+    void init_default_providers();
+
+private:
+    std::map<std::string, ProviderCapabilities> provider_capabilities_;
+    std::map<std::string, ClientConfig> provider_configs_;
+    
+    /**
+     * Select best provider based on criteria
+     */
+    std::string select_provider(const std::vector<Message>& messages, 
+                               const std::string& task_type);
+};
 
 /**
  * Convert Atom representation to Message
