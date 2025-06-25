@@ -6,10 +6,35 @@
 
 #include "LLMClient.h"
 #include "ChatCompletion.h"
+#include <stdexcept>
+#include <ctime>
+#include <map>
 
+#ifdef HAVE_OPENCOG
 #include <opencog/guile/SchemeModule.h>
 #include <opencog/atomspace/AtomSpace.h>
 #include <opencog/util/Logger.h>
+using namespace opencog;
+#else
+// Minimal Guile definitions for non-OpenCog builds
+#include <libguile.h>
+#include <iostream>
+namespace opencog {
+    AtomSpace* get_current_atomspace() { return nullptr; }
+    struct logger {
+        static void error(const char* fmt, ...) { 
+            std::cerr << "ERROR: " << fmt << std::endl; 
+        }
+        static void warn(const char* fmt, ...) { 
+            std::cerr << "WARN: " << fmt << std::endl; 
+        }
+        static void info(const char* fmt, ...) { 
+            std::cout << "INFO: " << fmt << std::endl; 
+        }
+    };
+    static logger get_logger() { static logger instance; return instance; }
+}
+#endif
 
 using namespace opencog;
 using namespace opencog::caichat;
@@ -54,10 +79,13 @@ SCM caichat_create_session(SCM config_id, SCM atomspace_scm) {
         throw std::runtime_error("Client config not found: " + config_id_str);
     }
     
-    AtomSpace* as = SchemeSmob::ss_to_atomspace(atomspace_scm);
+    AtomSpace* as = nullptr;
+#ifdef HAVE_OPENCOG
+    as = SchemeSmob::ss_to_atomspace(atomspace_scm);
     if (!as) {
         throw std::runtime_error("Invalid AtomSpace");
     }
+#endif
     
     ClientConfig config = client_configs[config_id_str];
     auto client = create_client(config);
@@ -87,7 +115,11 @@ SCM caichat_add_message(SCM session_id, SCM role, SCM content) {
         it->second->add_message(role_str, content_str);
         return SCM_BOOL_T;
     } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
         logger().error("Failed to add message: %s", e.what());
+#else
+        std::cerr << "Failed to add message: " << e.what() << std::endl;
+#endif
         return SCM_BOOL_F;
     }
 }
@@ -107,7 +139,11 @@ SCM caichat_complete(SCM session_id) {
         std::string response = it->second->complete();
         return scm_from_locale_string(response.c_str());
     } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
         logger().error("Failed to get completion: %s", e.what());
+#else
+        std::cerr << "Failed to get completion: " << e.what() << std::endl;
+#endif
         return SCM_BOOL_F;
     }
 }
@@ -127,7 +163,11 @@ SCM caichat_clear_history(SCM session_id) {
         it->second->clear_history();
         return SCM_BOOL_T;
     } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
         logger().error("Failed to clear history: %s", e.what());
+#else
+        std::cerr << "Failed to clear history: " << e.what() << std::endl;
+#endif
         return SCM_BOOL_F;
     }
 }
@@ -146,9 +186,17 @@ SCM caichat_save_conversation(SCM session_id, SCM conversation_id) {
     
     try {
         Handle conversation_atom = it->second->save_conversation(conversation_id_str);
+#ifdef HAVE_OPENCOG
         return SchemeSmob::handle_to_scm(conversation_atom);
+#else
+        return SCM_BOOL_T;  // Return success in minimal mode
+#endif
     } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
         logger().error("Failed to save conversation: %s", e.what());
+#else
+        std::cerr << "Failed to save conversation: " << e.what() << std::endl;
+#endif
         return SCM_BOOL_F;
     }
 }
@@ -169,7 +217,11 @@ SCM caichat_load_conversation(SCM session_id, SCM conversation_id) {
         it->second->load_conversation_by_id(conversation_id_str);
         return SCM_BOOL_T;
     } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
         logger().error("Failed to load conversation: %s", e.what());
+#else
+        std::cerr << "Failed to load conversation: " << e.what() << std::endl;
+#endif
         return SCM_BOOL_F;
     }
 }
