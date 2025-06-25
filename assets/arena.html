@@ -462,7 +462,17 @@
                         </svg>
                       </div>
                       <template
-                        x-if="messageIndex == chat.messages.length - 1 && (message.state == 'succeed' || message.state == 'failed')">
+                        x-if="messageIndex == chat.messages.length - 1 && message.state == 'failed'">
+                        <div class="regenerate-message-btn" @click="(event) => handleRetryMessage(index)"
+                          title="Retry">
+                          <svg fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                            <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+                          </svg>
+                        </div>
+                      </template>
+                      <template
+                        x-if="messageIndex == chat.messages.length - 1 && message.state == 'succeed'">
                         <div class="regenerate-message-btn" @click="(event) => handleRegenerateMessage(index)"
                           title="Regenerate">
                           <svg fill="currentColor" viewBox="0 0 16 16">
@@ -672,14 +682,22 @@
         handleRegenerateMessage(index) {
           const chat = this.chats[index];
           const lastIndex = chat.messages.length - 1;
-          if (lastIndex !== chat.hoveredMessageIndex) {
-            return
-          }
           let lastMessage = chat.messages[lastIndex];
           lastMessage.content = "";
           lastMessage.state = "loading";
           lastMessage.error = "";
           lastMessage.html = "";
+          this.asking++;
+          this.ask(index);
+        },
+
+        handleRetryMessage(index) {
+          const chat = this.chats[index];
+          const lastIndex = chat.messages.length - 1;
+          let lastMessage = chat.messages[lastIndex];
+          // Keep existing content for retry (don't clear it like regenerate)
+          lastMessage.state = "loading";
+          lastMessage.error = "";
           this.asking++;
           this.ask(index);
         },
