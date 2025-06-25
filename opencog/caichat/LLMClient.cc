@@ -26,7 +26,7 @@ namespace opencog {
             std::cout << "INFO: " << fmt << std::endl; 
         }
     };
-    static logger logger() { return logger{}; }
+    static logger get_logger() { static logger instance; return instance; }
 }
 // Minimal handle type
 typedef void* Handle;

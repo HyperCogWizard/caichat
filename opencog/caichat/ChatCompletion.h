@@ -8,8 +8,18 @@
 #define _OPENCOG_CAICHAT_CHAT_COMPLETION_H
 
 #include "LLMClient.h"
+
+#ifdef HAVE_OPENCOG
 #include <opencog/atomspace/AtomSpace.h>
 #include <opencog/atoms/base/Handle.h>
+using namespace opencog;
+#else
+// Minimal definitions for non-OpenCog builds
+class AtomSpace;
+typedef void* Handle;
+typedef std::vector<Handle> HandleSeq;
+#define Handle_UNDEFINED nullptr
+#endif
 
 namespace opencog {
 namespace caichat {

@@ -5,10 +5,34 @@
  */
 
 #include "ChatCompletion.h"
+
+#ifdef HAVE_OPENCOG
 #include <opencog/atoms/base/Node.h>
 #include <opencog/atoms/base/Link.h>
 #include <opencog/util/Logger.h>
 #include <opencog/util/uuid.h>
+using namespace opencog;
+#else
+// Minimal definitions for non-OpenCog builds
+#include <iostream>
+#include <random>
+#include <iomanip>
+#include <sstream>
+namespace opencog {
+    std::string uuid() {
+        static std::random_device rd;
+        static std::mt19937 gen(rd());
+        static std::uniform_int_distribution<> dis(0, 15);
+        
+        std::stringstream ss;
+        ss << std::hex;
+        for (int i = 0; i < 32; ++i) {
+            ss << dis(gen);
+        }
+        return ss.str();
+    }
+}
+#endif
 
 using namespace opencog;
 using namespace opencog::caichat;
