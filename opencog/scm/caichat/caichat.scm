@@ -27,7 +27,16 @@
         caichat-ask
         caichat-set-system-prompt
         caichat-list-sessions
-        caichat-get-session-info)
+        caichat-get-session-info
+        ;; GGML-specific functions
+        caichat-ggml-load-model
+        caichat-ggml-unload-model
+        caichat-ggml-model-info
+        caichat-ggml-cognitive-completion
+        caichat-ggml-atomspace-to-prompt
+        caichat-setup-ggml
+        caichat-ggml-chat
+        caichat-ggml-ask-with-atom)
 
 ;; Configuration storage
 (define caichat-configs (make-hash-table))
@@ -158,6 +167,71 @@
                        "Based on these OpenCog atoms:\n"
                        (string-join match-strs "\n")
                        "\nQuestion: " question))))))
+
+;;
+;; GGML Integration Functions
+;;
+
+(define* (caichat-setup-ggml model-path #:optional (n-threads 4) (n-ctx 2048))
+  "Configure GGML client for local model inference"
+  (let ((config-id (caichat-create-client-config "ggml" model-path "" "")))
+    (hash-set! caichat-configs "ggml" config-id)
+    config-id))
+
+(define* (caichat-ggml-session #:optional (atomspace (cog-atomspace)))
+  "Create a new GGML session for local inference"
+  (let ((config-id (hash-ref caichat-configs "ggml")))
+    (if config-id
+        (let ((session-id (caichat-create-session config-id atomspace)))
+          (hash-set! caichat-sessions "ggml" session-id)
+          session-id)
+        (error "GGML not configured. Run (caichat-setup-ggml model-path) first."))))
+
+(define (caichat-ggml-chat message)
+  "Chat with GGML model"
+  (let ((session-id (hash-ref caichat-sessions "ggml")))
+    (if session-id
+        (begin
+          (caichat-add-message session-id "user" message)
+          (caichat-complete session-id))
+        (error "No GGML session active. Run (caichat-ggml-session) first."))))
+
+(define (caichat-ggml-ask-with-atom atom question)
+  "Ask a question about an atom using GGML cognitive completion"
+  (let ((session-id (hash-ref caichat-sessions "ggml")))
+    (if session-id
+        (begin
+          (caichat-add-message session-id "user" 
+                             (string-append "Question about atom: " question))
+          (caichat-ggml-cognitive-completion session-id atom))
+        (error "No GGML session active. Run (caichat-ggml-session) first."))))
+
+(define (caichat-ggml-cognitive-chat message context-atom)
+  "Chat with GGML using cognitive architecture context"
+  (let ((session-id (hash-ref caichat-sessions "ggml")))
+    (if session-id
+        (begin
+          (caichat-add-message session-id "user" message)
+          (caichat-ggml-cognitive-completion session-id context-atom))
+        (error "No GGML session active. Run (caichat-ggml-session) first."))))
+
+(define (caichat-ggml-load-local-model model-path)
+  "Load a local GGML model"
+  (let ((session-id (hash-ref caichat-sessions "ggml")))
+    (if session-id
+        (caichat-ggml-load-model session-id model-path)
+        (error "No GGML session active. Run (caichat-ggml-session) first."))))
+
+(define (caichat-ggml-model-status)
+  "Get status of loaded GGML model"
+  (let ((session-id (hash-ref caichat-sessions "ggml")))
+    (if session-id
+        (caichat-ggml-model-info session-id)
+        "No GGML session active")))
+
+(define (caichat-neural-symbolic-analysis input)
+  "Perform neural-symbolic analysis using the bridge"
+  (caichat-neural-symbolic-bridge input))
 
 ;; Module initialization
 (cog-logger-info "CAIChat OpenCog module loaded successfully")

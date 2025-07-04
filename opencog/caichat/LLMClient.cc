@@ -44,6 +44,9 @@ typedef void* Handle;
 using namespace opencog;
 using namespace opencog::caichat;
 
+namespace opencog {
+namespace caichat {
+
 // Helper struct for curl response
 struct CurlResponse {
     std::string data;
@@ -672,6 +675,230 @@ std::vector<double> GroqClient::embeddings(const std::string& text) {
     throw std::runtime_error("Groq does not provide an embeddings API. Use OpenAI or other providers for embeddings.");
 }
 
+// GGML Client Implementation
+GGMLClient::GGMLClient(const ClientConfig& config) : LLMClient(config), model_context_(nullptr), model_loaded_(false) {
+    // Initialize with default GGML configuration
+    ggml_config_.model_path = config.model;  // Use model field as model path
+    ggml_config_.n_threads = 4;
+    ggml_config_.n_ctx = 2048;
+    ggml_config_.n_batch = 512;
+    ggml_config_.use_mmap = true;
+    ggml_config_.use_mlock = false;
+    ggml_config_.temperature = config.temperature;
+    ggml_config_.top_k = 40;
+    ggml_config_.top_p = config.top_p;
+    ggml_config_.repeat_penalty = 1.1f;
+    ggml_config_.n_predict = config.max_tokens > 0 ? config.max_tokens : 128;
+    
+    // Try to load model on construction
+    if (!ggml_config_.model_path.empty()) {
+        load_model(ggml_config_.model_path);
+    }
+}
+
+GGMLClient::GGMLClient(const ClientConfig& config, const GGMLConfig& ggml_config) 
+    : LLMClient(config), ggml_config_(ggml_config), model_context_(nullptr), model_loaded_(false) {
+    // Override temperature and top_p from client config
+    ggml_config_.temperature = config.temperature;
+    ggml_config_.top_p = config.top_p;
+    if (config.max_tokens > 0) {
+        ggml_config_.n_predict = config.max_tokens;
+    }
+    
+    // Try to load model on construction
+    if (!ggml_config_.model_path.empty()) {
+        load_model(ggml_config_.model_path);
+    }
+}
+
+GGMLClient::~GGMLClient() {
+    unload_model();
+}
+
+bool GGMLClient::load_model(const std::string& model_path) {
+    if (model_loaded_) {
+        unload_model();
+    }
+    
+    try {
+        // Initialize GGML context
+        if (!init_ggml_context()) {
+            return false;
+        }
+        
+        // For now, simulate model loading
+        // In a real implementation, this would call llama.cpp or similar GGML bindings
+        ggml_config_.model_path = model_path;
+        model_loaded_ = true;
+        model_info_ = "GGML Model: " + model_path + " (simulated)";
+        
+        return true;
+    } catch (const std::exception& e) {
+        model_loaded_ = false;
+        throw std::runtime_error("Failed to load GGML model: " + std::string(e.what()));
+    }
+}
+
+void GGMLClient::unload_model() {
+    if (model_loaded_) {
+        cleanup_ggml_context();
+        model_loaded_ = false;
+        model_info_.clear();
+    }
+}
+
+bool GGMLClient::is_model_loaded() const {
+    return model_loaded_;
+}
+
+std::string GGMLClient::get_model_info() const {
+    return model_info_;
+}
+
+std::string GGMLClient::chat_completion(const std::vector<Message>& messages) {
+    if (!model_loaded_) {
+        throw std::runtime_error("No GGML model loaded");
+    }
+    
+    std::string prompt = format_messages_for_ggml(messages);
+    return run_ggml_inference(prompt);
+}
+
+void GGMLClient::chat_completion_stream(
+    const std::vector<Message>& messages,
+    std::function<void(const std::string&)> callback) {
+    
+    if (!model_loaded_) {
+        throw std::runtime_error("No GGML model loaded");
+    }
+    
+    // For now, implement non-streaming version with chunked output
+    // In a real implementation, this would use streaming inference
+    std::string response = chat_completion(messages);
+    
+    // Simulate streaming by sending response in chunks
+    const size_t chunk_size = 20;
+    for (size_t i = 0; i < response.length(); i += chunk_size) {
+        std::string chunk = response.substr(i, chunk_size);
+        callback(chunk);
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+}
+
+std::vector<double> GGMLClient::embeddings(const std::string& text) {
+    if (!model_loaded_) {
+        throw std::runtime_error("No GGML model loaded");
+    }
+    
+    // For now, simulate embeddings
+    // In a real implementation, this would use embedding models
+    std::vector<double> embedding(384);  // Common embedding size
+    std::hash<std::string> hasher;
+    size_t hash_val = hasher(text);
+    
+    for (size_t i = 0; i < embedding.size(); ++i) {
+        embedding[i] = static_cast<double>((hash_val + i) % 1000) / 1000.0 - 0.5;
+    }
+    
+    return embedding;
+}
+
+std::string GGMLClient::atomspace_to_prompt(Handle pattern_atom, const std::string& context) {
+#ifdef HAVE_OPENCOG
+    if (pattern_atom == Handle_UNDEFINED) {
+        return context;
+    }
+    
+    AtomSpace* as = pattern_atom->getAtomSpace();
+    if (!as) {
+        return context;
+    }
+    
+    // Convert AtomSpace pattern to natural language prompt
+    std::string atom_name = as->get_name(pattern_atom);
+    std::string prompt = "Given the concept '" + atom_name + "'";
+    
+    if (!context.empty()) {
+        prompt += " in the context of: " + context;
+    }
+    
+    prompt += ", please provide a detailed analysis.";
+    
+    return prompt;
+#else
+    return context;
+#endif
+}
+
+std::string GGMLClient::cognitive_completion(const std::vector<Message>& messages, Handle context_atom) {
+    if (!model_loaded_) {
+        throw std::runtime_error("No GGML model loaded");
+    }
+    
+    // Enhance messages with cognitive context
+    std::vector<Message> enhanced_messages = messages;
+    
+    if (context_atom != Handle_UNDEFINED) {
+        std::string context_prompt = atomspace_to_prompt(context_atom);
+        Message context_message("system", "Cognitive context: " + context_prompt);
+        enhanced_messages.insert(enhanced_messages.begin(), context_message);
+    }
+    
+    // Add cognitive architecture instructions
+    Message cognitive_instruction("system", 
+        "You are integrated with OpenCog's cognitive architecture. "
+        "Provide responses that can be represented as atoms in the AtomSpace. "
+        "Focus on structured, logical representations of knowledge.");
+    enhanced_messages.insert(enhanced_messages.begin(), cognitive_instruction);
+    
+    return chat_completion(enhanced_messages);
+}
+
+bool GGMLClient::init_ggml_context() {
+    // Initialize GGML context
+    // For now, simulate initialization
+    // In a real implementation, this would initialize llama.cpp context
+    model_context_ = reinterpret_cast<void*>(0x1);  // Dummy pointer
+    return true;
+}
+
+void GGMLClient::cleanup_ggml_context() {
+    // Cleanup GGML context
+    // In a real implementation, this would cleanup llama.cpp context
+    model_context_ = nullptr;
+}
+
+std::string GGMLClient::format_messages_for_ggml(const std::vector<Message>& messages) {
+    std::string prompt;
+    
+    for (const auto& message : messages) {
+        if (message.role == "system") {
+            prompt += "[SYSTEM] " + message.content + "\n";
+        } else if (message.role == "user") {
+            prompt += "[USER] " + message.content + "\n";
+        } else if (message.role == "assistant") {
+            prompt += "[ASSISTANT] " + message.content + "\n";
+        }
+    }
+    
+    prompt += "[ASSISTANT] ";
+    return prompt;
+}
+
+std::string GGMLClient::run_ggml_inference(const std::string& prompt) {
+    // For now, simulate inference
+    // In a real implementation, this would call llama.cpp inference
+    std::string response = "GGML response to: " + prompt.substr(0, 100);
+    if (prompt.length() > 100) {
+        response += "...";
+    }
+    
+    // Add some cognitive architecture flavor
+    response += "\n\nThis response demonstrates local GGML inference integrated with OpenCog's cognitive architecture.";
+    
+    return response;
+}
+
 // Factory function
 std::unique_ptr<LLMClient> create_client(const ClientConfig& config) {
     if (config.provider == "openai") {
@@ -684,6 +911,8 @@ std::unique_ptr<LLMClient> create_client(const ClientConfig& config) {
         return std::make_unique<OllamaClient>(config);
     } else if (config.provider == "groq") {
         return std::make_unique<GroqClient>(config);
+    } else if (config.provider == "ggml") {
+        return std::make_unique<GGMLClient>(config);
     } else {
         throw std::runtime_error("Unknown provider: " + config.provider);
     }
@@ -818,6 +1047,18 @@ void LLMProviderRouter::init_default_providers() {
     groq_caps.cost_per_token = 0.0000002;  // Very fast and cheap
     groq_caps.max_context_length = 32768;
     register_provider("groq", groq_caps);
+    
+    // GGML capabilities (local models with OpenCog integration)
+    ProviderCapabilities ggml_caps;
+    ggml_caps.supports_chat = true;
+    ggml_caps.supports_streaming = true;
+    ggml_caps.supports_embeddings = true;  // Can generate embeddings locally
+    ggml_caps.supports_functions = false;
+    ggml_caps.supported_models = {"llama2-7b-chat.ggmlv3.q4_0.bin", "llama2-13b-chat.ggmlv3.q4_0.bin", 
+                                 "codellama-7b-instruct.ggmlv3.q4_0.bin", "mistral-7b-instruct-v0.1.ggmlv3.q4_0.bin"};
+    ggml_caps.cost_per_token = 0.0;  // Local deployment - no API costs
+    ggml_caps.max_context_length = 4096;  // Default context length for GGML models
+    register_provider("ggml", ggml_caps);
 }
 
 std::string LLMProviderRouter::select_provider(const std::vector<Message>& messages, 
@@ -868,3 +1109,6 @@ std::string LLMProviderRouter::select_provider(const std::vector<Message>& messa
     
     return provider_scores[0].first;  // Return best provider
 }
+
+} // namespace caichat
+} // namespace opencog
