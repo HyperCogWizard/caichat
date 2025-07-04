@@ -76,6 +76,11 @@ public:
      * Convert conversation to vector of messages
      */
     std::vector<Message> get_messages();
+    
+    /**
+     * Get the underlying LLM client
+     */
+    LLMClient* get_client() const;
 
 private:
     AtomSpace* atomspace_;

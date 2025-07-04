@@ -152,6 +152,95 @@ public:
 };
 
 /**
+ * GGML client implementation for local model inference
+ * Compatible with OpenCog cognitive architecture
+ */
+class GGMLClient : public LLMClient {
+public:
+    struct GGMLConfig {
+        std::string model_path;
+        int n_threads = 4;
+        int n_ctx = 2048;
+        int n_batch = 512;
+        bool use_mmap = true;
+        bool use_mlock = false;
+        float temperature = 0.7f;
+        int top_k = 40;
+        float top_p = 0.95f;
+        float repeat_penalty = 1.1f;
+        int n_predict = 128;
+    };
+    
+    GGMLClient(const ClientConfig& config);
+    GGMLClient(const ClientConfig& config, const GGMLConfig& ggml_config);
+    ~GGMLClient();
+    
+    std::string chat_completion(const std::vector<Message>& messages) override;
+    void chat_completion_stream(
+        const std::vector<Message>& messages,
+        std::function<void(const std::string&)> callback) override;
+    std::vector<double> embeddings(const std::string& text) override;
+    
+    /**
+     * Load a GGML model from file
+     */
+    bool load_model(const std::string& model_path);
+    
+    /**
+     * Unload current model
+     */
+    void unload_model();
+    
+    /**
+     * Check if model is loaded
+     */
+    bool is_model_loaded() const;
+    
+    /**
+     * Get model info
+     */
+    std::string get_model_info() const;
+    
+    /**
+     * Neural-symbolic bridge integration
+     * Convert AtomSpace patterns to prompts for better inference
+     */
+    std::string atomspace_to_prompt(Handle pattern_atom, const std::string& context = "");
+    
+    /**
+     * Cognitive architecture integration
+     * Generate responses that can be parsed into AtomSpace representations
+     */
+    std::string cognitive_completion(const std::vector<Message>& messages, Handle context_atom = Handle_UNDEFINED);
+
+private:
+    GGMLConfig ggml_config_;
+    void* model_context_;  // Opaque pointer to GGML context
+    bool model_loaded_;
+    std::string model_info_;
+    
+    /**
+     * Initialize GGML context
+     */
+    bool init_ggml_context();
+    
+    /**
+     * Cleanup GGML context
+     */
+    void cleanup_ggml_context();
+    
+    /**
+     * Format messages for GGML inference
+     */
+    std::string format_messages_for_ggml(const std::vector<Message>& messages);
+    
+    /**
+     * Run GGML inference
+     */
+    std::string run_ggml_inference(const std::string& prompt);
+};
+
+/**
  * Factory function to create appropriate client
  */
 std::unique_ptr<LLMClient> create_client(const ClientConfig& config);

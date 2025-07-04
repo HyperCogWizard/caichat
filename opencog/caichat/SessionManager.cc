@@ -457,22 +457,57 @@ std::string NeuralSymbolicBridge::atomspace_to_llm_query(Handle pattern_atom) {
 
 std::string NeuralSymbolicBridge::neural_symbolic_bridge(const std::string& input) {
     // This implements the (neural-symbolic-bridge input) function from the pseudocode
+    // Enhanced for GGML integration
     
     // Step 1: Process input through AtomSpace (symbolic reasoning)
     HandleSeq input_concepts = extract_concepts(input);
     
-    // Step 2: Convert to LLM query format
-    std::string llm_query = "Analyze these concepts in context: " + input;
+    // Step 2: Create cognitive context from AtomSpace
+    std::string cognitive_context = build_cognitive_context(input_concepts);
     
-    // Step 3: In a full implementation, this would call an LLM
-    // For now, return a structured response
-    std::string response = "Neural-symbolic analysis of: " + input + 
-                          "\nExtracted " + std::to_string(input_concepts.size()) + " concepts";
+    // Step 3: Convert to LLM query format with cognitive enhancement
+    std::string llm_query = "Cognitive Analysis Request:\n";
+    llm_query += "Input: " + input + "\n";
+    llm_query += "AtomSpace Context: " + cognitive_context + "\n";
+    llm_query += "Please provide a structured analysis that can be represented in the AtomSpace.";
     
-    // Step 4: Convert LLM response back to AtomSpace
+    // Step 4: In a full implementation, this would call GGML or other LLM
+    // For now, return a structured response with cognitive architecture integration
+    std::string response = "Neural-symbolic analysis of: " + input + "\n";
+    response += "Extracted " + std::to_string(input_concepts.size()) + " concepts\n";
+    response += "Cognitive context: " + cognitive_context + "\n";
+    response += "Recommended AtomSpace representation: Use ConceptNode and EvaluationLink structures\n";
+    
+    // Step 5: Convert LLM response back to AtomSpace
     Handle response_atom = llm_to_atomspace(response, input);
     
+    // Step 6: Create relationship links for cognitive synergy
+    if (input_concepts.size() > 1) {
+        Handle cognitive_link = create_concept_relationships(input_concepts, "cognitive_analysis");
+        response += "Created cognitive relationship links in AtomSpace\n";
+    }
+    
     return response;
+}
+
+std::string NeuralSymbolicBridge::build_cognitive_context(const HandleSeq& concepts) {
+    std::string context = "Concepts: ";
+    
+#ifdef HAVE_OPENCOG
+    if (atomspace_) {
+        for (size_t i = 0; i < concepts.size(); ++i) {
+            if (i > 0) context += ", ";
+            std::string atom_name = atomspace_->get_name(concepts[i]);
+            context += atom_name;
+        }
+    }
+#endif
+    
+    if (concepts.empty()) {
+        context += "None extracted";
+    }
+    
+    return context;
 }
 
 HandleSeq NeuralSymbolicBridge::extract_concepts(const std::string& text) {

@@ -381,6 +381,171 @@ SCM caichat_neural_symbolic_bridge(SCM input) {
     }
 }
 
+/**
+ * Load a GGML model
+ */
+SCM caichat_ggml_load_model(SCM session_id, SCM model_path) {
+    std::string session_id_str = scm_to_locale_string(session_id);
+    std::string model_path_str = scm_to_locale_string(model_path);
+    
+    try {
+        auto it = completions.find(session_id_str);
+        if (it != completions.end()) {
+            // Get the LLM client from the completion
+            auto client = it->second->get_client();
+            auto ggml_client = dynamic_cast<GGMLClient*>(client);
+            
+            if (ggml_client) {
+                bool success = ggml_client->load_model(model_path_str);
+                return success ? SCM_BOOL_T : SCM_BOOL_F;
+            }
+        }
+        return SCM_BOOL_F;
+    } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
+        logger().error("GGML model loading failed: %s", e.what());
+#else
+        std::cerr << "GGML model loading failed: " << e.what() << std::endl;
+#endif
+        return SCM_BOOL_F;
+    }
+}
+
+/**
+ * Unload GGML model
+ */
+SCM caichat_ggml_unload_model(SCM session_id) {
+    std::string session_id_str = scm_to_locale_string(session_id);
+    
+    try {
+        auto it = completions.find(session_id_str);
+        if (it != completions.end()) {
+            // Get the LLM client from the completion
+            auto client = it->second->get_client();
+            auto ggml_client = dynamic_cast<GGMLClient*>(client);
+            
+            if (ggml_client) {
+                ggml_client->unload_model();
+                return SCM_BOOL_T;
+            }
+        }
+        return SCM_BOOL_F;
+    } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
+        logger().error("GGML model unloading failed: %s", e.what());
+#else
+        std::cerr << "GGML model unloading failed: " << e.what() << std::endl;
+#endif
+        return SCM_BOOL_F;
+    }
+}
+
+/**
+ * Get GGML model information
+ */
+SCM caichat_ggml_model_info(SCM session_id) {
+    std::string session_id_str = scm_to_locale_string(session_id);
+    
+    try {
+        auto it = completions.find(session_id_str);
+        if (it != completions.end()) {
+            // Get the LLM client from the completion
+            auto client = it->second->get_client();
+            auto ggml_client = dynamic_cast<GGMLClient*>(client);
+            
+            if (ggml_client) {
+                std::string info = ggml_client->get_model_info();
+                return scm_from_locale_string(info.c_str());
+            }
+        }
+        return scm_from_locale_string("No GGML model loaded");
+    } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
+        logger().error("GGML model info failed: %s", e.what());
+#else
+        std::cerr << "GGML model info failed: " << e.what() << std::endl;
+#endif
+        return scm_from_locale_string("Error getting model info");
+    }
+}
+
+/**
+ * Cognitive completion with GGML
+ */
+SCM caichat_ggml_cognitive_completion(SCM session_id, SCM atom_handle) {
+    std::string session_id_str = scm_to_locale_string(session_id);
+    
+    try {
+        auto it = completions.find(session_id_str);
+        if (it != completions.end()) {
+            // Get the LLM client from the completion
+            auto client = it->second->get_client();
+            auto ggml_client = dynamic_cast<GGMLClient*>(client);
+            
+            if (ggml_client) {
+                // Get current messages from the session
+                auto messages = it->second->get_messages();
+                
+                // Convert SCM atom handle to Handle
+                Handle context_atom = Handle_UNDEFINED;
+#ifdef HAVE_OPENCOG
+                if (!scm_is_false(atom_handle)) {
+                    context_atom = scm_to_handle(atom_handle);
+                }
+#endif
+                
+                std::string response = ggml_client->cognitive_completion(messages, context_atom);
+                return scm_from_locale_string(response.c_str());
+            }
+        }
+        return scm_from_locale_string("No GGML client available");
+    } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
+        logger().error("GGML cognitive completion failed: %s", e.what());
+#else
+        std::cerr << "GGML cognitive completion failed: " << e.what() << std::endl;
+#endif
+        return scm_from_locale_string("Error in cognitive completion");
+    }
+}
+
+/**
+ * Convert AtomSpace pattern to GGML prompt
+ */
+SCM caichat_ggml_atomspace_to_prompt(SCM session_id, SCM atom_handle) {
+    std::string session_id_str = scm_to_locale_string(session_id);
+    
+    try {
+        auto it = completions.find(session_id_str);
+        if (it != completions.end()) {
+            // Get the LLM client from the completion
+            auto client = it->second->get_client();
+            auto ggml_client = dynamic_cast<GGMLClient*>(client);
+            
+            if (ggml_client) {
+                // Convert SCM atom handle to Handle
+                Handle pattern_atom = Handle_UNDEFINED;
+#ifdef HAVE_OPENCOG
+                if (!scm_is_false(atom_handle)) {
+                    pattern_atom = scm_to_handle(atom_handle);
+                }
+#endif
+                
+                std::string prompt = ggml_client->atomspace_to_prompt(pattern_atom);
+                return scm_from_locale_string(prompt.c_str());
+            }
+        }
+        return scm_from_locale_string("No GGML client available");
+    } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
+        logger().error("GGML atomspace to prompt failed: %s", e.what());
+#else
+        std::cerr << "GGML atomspace to prompt failed: " << e.what() << std::endl;
+#endif
+        return scm_from_locale_string("Error converting atomspace to prompt");
+    }
+}
+
 // Initialize the module
 extern "C" void opencog_caichat_init();
 
@@ -414,4 +579,16 @@ void opencog_caichat_init() {
                        (scm_t_subr) caichat_audit_core_modules);
     scm_c_define_gsubr("caichat-neural-symbolic-bridge", 1, 0, 0, 
                        (scm_t_subr) caichat_neural_symbolic_bridge);
+    
+    // GGML-specific functions for OpenCog integration
+    scm_c_define_gsubr("caichat-ggml-load-model", 2, 0, 0, 
+                       (scm_t_subr) caichat_ggml_load_model);
+    scm_c_define_gsubr("caichat-ggml-unload-model", 1, 0, 0, 
+                       (scm_t_subr) caichat_ggml_unload_model);
+    scm_c_define_gsubr("caichat-ggml-model-info", 1, 0, 0, 
+                       (scm_t_subr) caichat_ggml_model_info);
+    scm_c_define_gsubr("caichat-ggml-cognitive-completion", 2, 0, 0, 
+                       (scm_t_subr) caichat_ggml_cognitive_completion);
+    scm_c_define_gsubr("caichat-ggml-atomspace-to-prompt", 2, 0, 0, 
+                       (scm_t_subr) caichat_ggml_atomspace_to_prompt);
 }
