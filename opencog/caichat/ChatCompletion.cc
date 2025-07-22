@@ -223,3 +223,7 @@ void ChatCompletion::load_conversation_by_id(const std::string& conversation_id)
 std::vector<Message> ChatCompletion::get_messages() {
     return conversation_;
 }
+
+LLMClient* ChatCompletion::get_client() const {
+    return client_.get();
+}

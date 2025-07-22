@@ -184,6 +184,12 @@ public:
      * Create relationship links between concepts
      */
     Handle create_concept_relationships(const HandleSeq& concepts, const std::string& relation_type = "related_to");
+    
+    /**
+     * Build cognitive context from AtomSpace concepts
+     * Enhanced for GGML integration
+     */
+    std::string build_cognitive_context(const HandleSeq& concepts);
 
 private:
     AtomSpace* atomspace_;
