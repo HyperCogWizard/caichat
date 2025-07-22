@@ -21,7 +21,15 @@
            caichat-help
            caichat-rag-query
            caichat-add-document
-           caichat-create-knowledge-base)
+           caichat-create-knowledge-base
+           ;; New functions from issue #3 requirements
+           caichat-init-llm-provider
+           caichat-route-llm-request
+           caichat-propagate-patterns
+           caichat-map-opencog-api
+           caichat-neural-symbolic-bridge
+           caichat-audit-core-modules
+           caichat-mediate-session)
 
 ;; Module initialization
 (define (caichat-init)
