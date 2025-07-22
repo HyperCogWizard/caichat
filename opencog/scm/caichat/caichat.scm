@@ -36,7 +36,12 @@
         caichat-ggml-atomspace-to-prompt
         caichat-setup-ggml
         caichat-ggml-chat
-        caichat-ggml-ask-with-atom)
+        caichat-ggml-ask-with-atom
+        ;; New functions from issue #3 requirements
+        caichat-init-llm-provider
+        caichat-route-llm-request
+        caichat-propagate-patterns
+        caichat-map-opencog-api)
 
 ;; Configuration storage
 (define caichat-configs (make-hash-table))
