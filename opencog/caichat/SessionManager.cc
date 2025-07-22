@@ -41,6 +41,9 @@ namespace opencog {
 using namespace opencog;
 using namespace opencog::caichat;
 
+namespace opencog {
+namespace caichat {
+
 // SessionManager Implementation
 SessionManager::SessionManager(AtomSpace* atomspace) : atomspace_(atomspace) {
     // Initialize the router with default providers
@@ -573,3 +576,57 @@ std::string NeuralSymbolicBridge::infer_relationship(const std::string& entity1,
         return "follows";
     }
 }
+
+// New SessionManager methods for LLM provider routing
+std::vector<std::string> SessionManager::get_available_providers(const std::string& task_type) {
+    return router_.get_available_providers(task_type);
+}
+
+std::string SessionManager::route_request(const std::vector<Message>& messages, 
+                                         const std::string& preferred_provider,
+                                         const std::string& task_type) {
+    return router_.route_llm_request(messages, preferred_provider, task_type);
+}
+
+std::string SessionManager::execute_routed_request(const std::vector<Message>& messages,
+                                                  const std::string& preferred_provider) {
+    try {
+        // Route the request to get the best provider
+        std::string selected_provider = router_.route_llm_request(messages, preferred_provider, "chat");
+        
+        // Create a temporary client configuration for the selected provider
+        // Note: In a real implementation, these should come from configuration
+        ClientConfig config;
+        config.provider = selected_provider;
+        
+        // Set default models for each provider
+        if (selected_provider == "openai") {
+            config.model = "gpt-3.5-turbo";
+        } else if (selected_provider == "claude") {
+            config.model = "claude-3-sonnet-20240229";
+        } else if (selected_provider == "gemini") {
+            config.model = "gemini-pro";
+        } else if (selected_provider == "ollama") {
+            config.model = "llama2";
+        } else if (selected_provider == "groq") {
+            config.model = "mixtral-8x7b-32768";
+        } else if (selected_provider == "ggml") {
+            config.model = "llama2-7b-chat.ggmlv3.q4_0.bin";
+        } else {
+            throw std::runtime_error("Unknown provider: " + selected_provider);
+        }
+        
+        // Create the client using the factory function
+        auto client = create_client(config);
+        
+        // Execute the request
+        std::string response = client->chat_completion(messages);
+        
+        return response;
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to execute routed request: " + std::string(e.what()));
+    }
+}
+
+} // namespace caichat
+} // namespace opencog

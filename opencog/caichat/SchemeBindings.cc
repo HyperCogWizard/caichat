@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <ctime>
 #include <map>
+#include <algorithm>
 
 #ifdef HAVE_OPENCOG
 #include <opencog/guile/SchemeModule.h>
@@ -670,9 +671,29 @@ SCM caichat_init_llm_provider(SCM backends_list) {
             session_manager = std::make_unique<SessionManager>(as);
         }
         
-        std::string result = "Initialized LLM providers: ";
+        // Get available providers from the router (which auto-initializes default providers)
+        std::vector<std::string> available_providers = session_manager->get_available_providers("chat");
+        
+        // Filter requested backends against available providers
+        std::vector<std::string> initialized_providers;
         for (const auto& backend : backends) {
-            result += backend + " ";
+            auto it = std::find(available_providers.begin(), available_providers.end(), backend);
+            if (it != available_providers.end()) {
+                initialized_providers.push_back(backend);
+            }
+        }
+        
+        std::string result = "Initialized LLM providers: ";
+        for (const auto& provider : initialized_providers) {
+            result += provider + " ";
+        }
+        
+        // If no specific backends were requested, show all available
+        if (backends.empty()) {
+            result = "All available LLM providers initialized: ";
+            for (const auto& provider : available_providers) {
+                result += provider + " ";
+            }
         }
         
         return scm_from_locale_string(result.c_str());
@@ -712,13 +733,27 @@ SCM caichat_route_llm_request(SCM request_scm, SCM preferred_provider_scm) {
         std::vector<Message> messages;
         messages.push_back(Message("user", request_str));
         
-        // Use the router to select provider and route request
-        std::string result = "Routing request through optimal provider";
-        if (!preferred_provider.empty()) {
-            result += " (preferred: " + preferred_provider + ")";
+        // Route the request and execute it
+        try {
+            std::string response = session_manager->execute_routed_request(messages, preferred_provider);
+            
+            // Format the response to include routing information
+            std::string selected_provider = session_manager->route_request(messages, preferred_provider, "chat");
+            std::string full_response = "Provider: " + selected_provider + "\nResponse: " + response;
+            
+            return scm_from_locale_string(full_response.c_str());
+        } catch (const std::exception& routing_error) {
+            // If routing fails (e.g., no API keys), return informational message
+            std::string selected_provider = session_manager->route_request(messages, preferred_provider, "chat");
+            std::string result = "Routed to provider: " + selected_provider;
+            if (!preferred_provider.empty()) {
+                result += " (preferred: " + preferred_provider + ")";
+            }
+            result += "\nNote: " + std::string(routing_error.what());
+            
+            return scm_from_locale_string(result.c_str());
         }
         
-        return scm_from_locale_string(result.c_str());
     } catch (const std::exception& e) {
 #ifdef HAVE_OPENCOG
         logger().error("LLM request routing failed: %s", e.what());
