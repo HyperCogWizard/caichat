@@ -28,9 +28,15 @@ namespace opencog {
     };
     static logger get_logger() { static logger instance; return instance; }
 }
-// Minimal handle type
+// Minimal handle type and atom type definitions for non-OpenCog builds
 typedef void* Handle;
 #define Handle_UNDEFINED nullptr
+#define MESSAGE_LINK 1
+#define CONCEPT_NODE 2
+#define EVALUATION_LINK 3
+#define LIST_LINK 4
+#define MEMBER_LINK 5
+#define PREDICATE_NODE 6
 #endif
 
 #include <curl/curl.h>
