@@ -781,8 +781,8 @@ SCM caichat_route_llm_request(SCM request_scm, SCM preferred_provider_scm) {
                     if (!preferred_provider.empty()) {
                         result += " (preferred: " + preferred_provider + ")";
                     }
-                    result += "\nTest mode response: Successfully routed '" + request_str.substr(0, 50);
-                    if (request_str.length() > 50) {
+                    result += "\nTest mode response: Successfully routed '" + request_str.substr(0, TRUNCATION_LENGTH);
+                    if (request_str.length() > TRUNCATION_LENGTH) {
                         result += "...";
                     }
                     result += "' to " + selected_provider + " provider.";
