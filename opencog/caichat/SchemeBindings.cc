@@ -795,8 +795,8 @@ SCM caichat_route_llm_request(SCM request_scm, SCM preferred_provider_scm) {
                 std::string response = client->chat_completion(messages);
                 
                 std::string result = "Request routed to " + selected_provider + "\n";
-                result += "Response: " + response.substr(0, 100);
-                if (response.length() > 100) {
+                result += "Response: " + response.substr(0, RESPONSE_TRUNCATION_LIMIT);
+                if (response.length() > RESPONSE_TRUNCATION_LIMIT) {
                     result += "...";
                 }
                 
