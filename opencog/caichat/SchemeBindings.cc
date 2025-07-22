@@ -827,6 +827,8 @@ SCM caichat_route_llm_request(SCM request_scm, SCM preferred_provider_scm) {
                                 
                                 return scm_from_locale_string(result.c_str());
                             } catch (const std::exception& fallback_e) {
+                                // Log the fallback error
+                                opencog::get_logger().error("Fallback provider failed: %s", fallback_e.what());
                                 // Continue to next fallback
                                 continue;
                             }
