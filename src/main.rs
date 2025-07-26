@@ -1,13 +1,18 @@
 mod cli;
 mod client;
 mod config;
+mod config_reinforcement;
 mod function;
+mod hypergraph;
 mod rag;
 mod render;
 mod repl;
 mod serve;
 #[macro_use]
 mod utils;
+
+#[cfg(test)]
+mod test_hypergraph_audit;
 
 #[macro_use]
 extern crate log;
@@ -52,9 +57,34 @@ async fn main() -> Result<()> {
         || cli.list_agents
         || cli.list_rags
         || cli.list_macros
-        || cli.list_sessions;
+        || cli.list_sessions
+        || cli.audit_hypergraph;
     setup_logger(working_mode.is_serve())?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
+    
+    // Initialize hypergraph coordinator for module synergy
+    crate::hypergraph::init_hypergraph_coordinator(config.clone())?;
+    
+    // Initialize configuration reinforcement for enhanced robustness
+    crate::config_reinforcement::init_config_reinforcement(None)?;
+    
+    // Register core modules for hypergraph tracking
+    crate::hypergraph::register_module("client")?;
+    crate::hypergraph::register_module("config")?;
+    crate::hypergraph::register_module("rag")?;
+    crate::hypergraph::register_module("repl")?;
+    crate::hypergraph::register_module("function")?;
+    crate::hypergraph::register_module("serve")?;
+    
+    // Establish module synergy connections
+    crate::hypergraph::establish_connection("client", "config", 0.9)?;
+    crate::hypergraph::establish_connection("client", "function", 0.8)?;
+    crate::hypergraph::establish_connection("config", "rag", 0.7)?;
+    crate::hypergraph::establish_connection("repl", "client", 0.9)?;
+    crate::hypergraph::establish_connection("repl", "config", 0.8)?;
+    crate::hypergraph::establish_connection("serve", "client", 0.9)?;
+    crate::hypergraph::establish_connection("rag", "client", 0.8)?;
+    
     if let Err(err) = run(config, cli, text).await {
         render_error(err);
         std::process::exit(1);
@@ -140,6 +170,19 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
     if cli.list_sessions {
         let sessions = config.read().list_sessions().join("\n");
         println!("{sessions}");
+        return Ok(());
+    }
+    
+    if cli.audit_hypergraph {
+        match crate::hypergraph::generate_health_report() {
+            Ok(report) => {
+                println!("{}", report);
+            }
+            Err(err) => {
+                eprintln!("Failed to generate hypergraph health report: {}", err);
+                return Err(err);
+            }
+        }
         return Ok(());
     }
     if let Some(model_id) = &cli.model {
