@@ -2,6 +2,7 @@ use self::splitter::*;
 
 use crate::client::*;
 use crate::config::*;
+use crate::hypergraph;
 use crate::utils::*;
 
 mod serde_vectors;
@@ -299,15 +300,38 @@ impl Rag {
         rerank_model: Option<&str>,
         abort_signal: AbortSignal,
     ) -> Result<(String, Vec<DocumentId>)> {
+        let start_time = std::time::Instant::now();
+        
         let ret = abortable_run_with_spinner(
             self.hybird_search(text, top_k, rerank_model),
             "Searching",
             abort_signal,
         )
         .await;
-        let (ids, documents): (Vec<_>, Vec<_>) = ret?.into_iter().unzip();
-        let embeddings = documents.join("\n\n");
-        Ok((embeddings, ids))
+        
+        let result = match ret {
+            Ok(results) => {
+                let (ids, documents): (Vec<_>, Vec<_>) = results.into_iter().unzip();
+                let embeddings = documents.join("\n\n");
+                Ok((embeddings, ids))
+            }
+            Err(err) => Err(err)
+        };
+        
+        // Record RAG activity for hypergraph tracking
+        let operation_duration = start_time.elapsed();
+        if let Err(err) = hypergraph::record_activity("rag", "rag_query", operation_duration) {
+            log::warn!("Failed to record RAG activity: {}", err);
+        }
+        
+        // Record errors if any
+        if let Err(ref error) = result {
+            if let Err(err) = hypergraph::record_error("rag", &error.to_string()) {
+                log::warn!("Failed to record RAG error: {}", err);
+            }
+        }
+        
+        result
     }
 
     pub async fn sync_documents(

@@ -1,5 +1,6 @@
 use super::input::*;
 use super::*;
+use crate::hypergraph;
 
 use crate::client::{Message, MessageContent, MessageRole};
 use crate::render::MarkdownRender;
@@ -457,6 +458,8 @@ impl Session {
     }
 
     pub fn add_message(&mut self, input: &Input, output: &str) -> Result<()> {
+        let start_time = std::time::Instant::now();
+        
         if input.continue_output().is_some() {
             if let Some(message) = self.messages.last_mut() {
                 if let MessageContent::Text(text) = &mut message.content {
@@ -494,6 +497,13 @@ impl Session {
             ));
         }
         self.dirty = true;
+        
+        // Record session activity for hypergraph tracking
+        let operation_duration = start_time.elapsed();
+        if let Err(err) = hypergraph::record_activity("session", "add_message", operation_duration) {
+            log::warn!("Failed to record session activity: {}", err);
+        }
+        
         Ok(())
     }
 

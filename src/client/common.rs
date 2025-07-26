@@ -3,6 +3,7 @@ use super::*;
 use crate::{
     config::{Config, GlobalConfig, Input},
     function::{eval_tool_calls, FunctionDeclaration, ToolCall, ToolResult},
+    hypergraph,
     render::render_stream,
     utils::*,
 };
@@ -66,15 +67,33 @@ pub trait Client: Sync + Send {
     }
 
     async fn chat_completions(&self, input: Input) -> Result<ChatCompletionsOutput> {
-        if self.global_config().read().dry_run {
+        let start_time = std::time::Instant::now();
+        
+        let result = if self.global_config().read().dry_run {
             let content = input.echo_messages();
-            return Ok(ChatCompletionsOutput::new(&content));
+            Ok(ChatCompletionsOutput::new(&content))
+        } else {
+            let client = self.build_client()?;
+            let data = input.prepare_completion_data(self.model(), false)?;
+            self.chat_completions_inner(&client, data)
+                .await
+                .with_context(|| "Failed to call chat-completions api")
+        };
+        
+        // Record activity for hypergraph tracking
+        let operation_duration = start_time.elapsed();
+        if let Err(err) = hypergraph::record_activity("client", "llm_completion", operation_duration) {
+            log::warn!("Failed to record client activity: {}", err);
         }
-        let client = self.build_client()?;
-        let data = input.prepare_completion_data(self.model(), false)?;
-        self.chat_completions_inner(&client, data)
-            .await
-            .with_context(|| "Failed to call chat-completions api")
+        
+        // Record errors if any
+        if let Err(ref error) = result {
+            if let Err(err) = hypergraph::record_error("client", &error.to_string()) {
+                log::warn!("Failed to record client error: {}", err);
+            }
+        }
+        
+        result
     }
 
     async fn chat_completions_streaming(
@@ -106,10 +125,22 @@ pub trait Client: Sync + Send {
     }
 
     async fn embeddings(&self, data: &EmbeddingsData) -> Result<Vec<Vec<f32>>> {
-        let client = self.build_client()?;
-        self.embeddings_inner(&client, data)
-            .await
-            .context("Failed to call embeddings api")
+        let start_time = std::time::Instant::now();
+        
+        let result = {
+            let client = self.build_client()?;
+            self.embeddings_inner(&client, data)
+                .await
+                .context("Failed to call embeddings api")
+        };
+        
+        // Record activity for hypergraph tracking
+        let operation_duration = start_time.elapsed();
+        if let Err(err) = hypergraph::record_activity("client", "embedding", operation_duration) {
+            log::warn!("Failed to record client embedding activity: {}", err);
+        }
+        
+        result
     }
 
     async fn rerank(&self, data: &RerankData) -> Result<RerankOutput> {
