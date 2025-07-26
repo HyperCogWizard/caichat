@@ -118,6 +118,24 @@ public:
      * Cleanup inactive sessions
      */
     void cleanup_inactive_sessions(int max_age_hours = 24);
+    
+    /**
+     * Get available providers from router
+     */
+    std::vector<std::string> get_available_providers(const std::string& task_type = "chat");
+    
+    /**
+     * Route LLM request using the internal router
+     */
+    std::string route_request(const std::vector<Message>& messages, 
+                             const std::string& preferred_provider = "",
+                             const std::string& task_type = "chat");
+    
+    /**
+     * Execute a routed LLM request and return response
+     */
+    std::string execute_routed_request(const std::vector<Message>& messages,
+                                      const std::string& preferred_provider = "");
 
 private:
     AtomSpace* atomspace_;
