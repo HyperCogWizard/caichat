@@ -1,6 +1,7 @@
 mod cli;
 mod client;
 mod config;
+mod config_reinforcement;
 mod function;
 mod hypergraph;
 mod rag;
@@ -63,6 +64,9 @@ async fn main() -> Result<()> {
     
     // Initialize hypergraph coordinator for module synergy
     crate::hypergraph::init_hypergraph_coordinator(config.clone())?;
+    
+    // Initialize configuration reinforcement for enhanced robustness
+    crate::config_reinforcement::init_config_reinforcement(None)?;
     
     // Register core modules for hypergraph tracking
     crate::hypergraph::register_module("client")?;

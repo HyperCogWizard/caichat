@@ -8,7 +8,6 @@ use crate::config::GlobalConfig;
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -54,11 +53,11 @@ struct ModuleMetrics {
 }
 
 #[derive(Debug, Clone, Default)]
-struct PerformanceMetrics {
-    total_operations: u64,
-    average_response_time: Duration,
-    memory_efficiency: f64,
-    synergy_coefficient: f64,
+pub struct PerformanceMetrics {
+    pub total_operations: u64,
+    pub average_response_time: Duration,
+    pub memory_efficiency: f64,
+    pub synergy_coefficient: f64,
 }
 
 impl HypergraphCoordinator {
