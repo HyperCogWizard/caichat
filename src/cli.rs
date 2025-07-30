@@ -81,6 +81,9 @@ pub struct Cli {
     /// List all macros
     #[clap(long)]
     pub list_macros: bool,
+    /// Audit core modules for hypergraph synergy
+    #[clap(long)]
+    pub audit_hypergraph: bool,
     /// Input text
     #[clap(trailing_var_arg = true)]
     text: Vec<String>,
