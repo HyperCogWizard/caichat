@@ -1,0 +1,35 @@
+# Created using wingetcreate 1.5.7.0
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.4.0.schema.json
+
+PackageIdentifier: sigoden.aichat
+PackageVersion: 0.29.0
+PackageLocale: en-US
+Publisher: sigoden
+PublisherUrl: https://github.com/sigoden
+PublisherSupportUrl: https://github.com/sigoden/aichat/issues
+PackageName: AIChat
+PackageUrl: https://github.com/sigoden/aichat
+License: MIT OR Apache-2.0
+LicenseUrl: https://github.com/sigoden/aichat/blob/main/LICENSE-MIT
+Copyright: Copyright (c) 2023 sigoden
+ShortDescription: All-in-one LLM CLI Tool
+Description: |-
+  AIChat is a command-line interface (CLI) tool for interacting with various large language models (LLMs) including OpenAI GPT, Anthropic Claude, Google Gemini, and many others. It provides a unified interface for AI conversations with features like role-based prompting, session management, and streaming responses.
+Moniker: aichat
+Tags:
+- ai
+- cli
+- chatgpt
+- llm
+- anthropic
+- openai
+- command-line
+- rust
+ReleaseNotes: |-
+  Latest version of AIChat with improved performance and new features.
+ReleaseNotesUrl: https://github.com/sigoden/aichat/releases/tag/v0.29.0
+Documentations:
+- DocumentLabel: README
+  DocumentUrl: https://github.com/sigoden/aichat/blob/main/README.md
+ManifestType: defaultLocale
+ManifestVersion: 1.4.0

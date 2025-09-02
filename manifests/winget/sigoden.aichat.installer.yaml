@@ -1,0 +1,38 @@
+# Created using wingetcreate 1.5.7.0
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.4.0.schema.json
+
+PackageIdentifier: sigoden.aichat
+PackageVersion: 0.29.0
+Platform:
+- Windows.Desktop
+MinimumOSVersion: 10.0.0.0
+InstallerType: zip
+InstallModes:
+- interactive
+- silent
+UpgradeBehavior: install
+ReleaseDate: 2024-01-01
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/sigoden/aichat/releases/download/v0.29.0/aichat-v0.29.0-x86_64-pc-windows-msvc.zip
+  InstallerSha256: INSERT_HASH_HERE
+  NestedInstallerType: portable
+  NestedInstallerFiles:
+  - RelativeFilePath: aichat.exe
+    PortableCommandAlias: aichat
+- Architecture: arm64
+  InstallerUrl: https://github.com/sigoden/aichat/releases/download/v0.29.0/aichat-v0.29.0-aarch64-pc-windows-msvc.zip
+  InstallerSha256: INSERT_HASH_HERE
+  NestedInstallerType: portable
+  NestedInstallerFiles:
+  - RelativeFilePath: aichat.exe
+    PortableCommandAlias: aichat
+- Architecture: x86
+  InstallerUrl: https://github.com/sigoden/aichat/releases/download/v0.29.0/aichat-v0.29.0-i686-pc-windows-msvc.zip
+  InstallerSha256: INSERT_HASH_HERE
+  NestedInstallerType: portable
+  NestedInstallerFiles:
+  - RelativeFilePath: aichat.exe
+    PortableCommandAlias: aichat
+ManifestType: installer
+ManifestVersion: 1.4.0
