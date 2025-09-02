@@ -1,0 +1,68 @@
+{
+  "name": "@aichat/cli",
+  "version": "0.29.0",
+  "description": "All-in-one LLM CLI tool - Node.js wrapper for AIChat",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "aichat": "./bin/aichat"
+  },
+  "scripts": {
+    "postinstall": "node scripts/download-binary.js",
+    "test": "node test/test.js",
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "ai",
+    "llm",
+    "cli",
+    "chatgpt",
+    "anthropic",
+    "openai",
+    "rust",
+    "binary-wrapper"
+  ],
+  "author": "sigoden <sigoden@gmail.com>",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/sigoden/aichat",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sigoden/aichat.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sigoden/aichat/issues"
+  },
+  "engines": {
+    "node": ">=14"
+  },
+  "os": ["darwin", "linux", "win32"],
+  "cpu": ["x64", "arm64"],
+  "dependencies": {
+    "node-fetch": "^3.3.0",
+    "tar": "^6.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "typescript": "^4.9.0"
+  },
+  "optionalDependencies": {
+    "@aichat/cli-darwin-x64": "0.29.0",
+    "@aichat/cli-darwin-arm64": "0.29.0",
+    "@aichat/cli-linux-x64": "0.29.0",
+    "@aichat/cli-linux-arm64": "0.29.0",
+    "@aichat/cli-win32-x64": "0.29.0",
+    "@aichat/cli-win32-arm64": "0.29.0"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/sigoden"
+  }
+}

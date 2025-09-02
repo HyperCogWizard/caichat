@@ -1,0 +1,76 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "aichat-cli"
+version = "0.29.0"
+description = "All-in-one LLM CLI tool with Python bindings"
+readme = "README.md"
+license = {text = "MIT OR Apache-2.0"}
+authors = [
+    {name = "sigoden", email = "sigoden@gmail.com"}
+]
+maintainers = [
+    {name = "sigoden", email = "sigoden@gmail.com"}
+]
+keywords = [
+    "ai", "llm", "cli", "chatgpt", "anthropic", "openai", "rust"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: System Shells",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "typing-extensions>=4.0.0;python_version<'3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=22.0.0",
+    "isort>=5.10.0",
+    "mypy>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/sigoden/aichat"
+Repository = "https://github.com/sigoden/aichat"
+Documentation = "https://github.com/sigoden/aichat/wiki"
+"Bug Reports" = "https://github.com/sigoden/aichat/issues"
+Funding = "https://github.com/sponsors/sigoden"
+
+[project.scripts]
+aichat = "aichat_cli:main"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "python"
+module-name = "aichat_cli._core"
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.8"
+strict = true
