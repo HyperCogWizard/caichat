@@ -5,20 +5,19 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "aichat": "./bin/aichat"
+    "aichat": "./examples/npm/aichat-wrapper.js"
   },
   "scripts": {
-    "postinstall": "node scripts/download-binary.js",
-    "test": "node test/test.js",
-    "build": "tsc",
-    "prepublishOnly": "npm run build"
+    "postinstall": "node examples/npm/download-binary.js",
+    "test": "node examples/npm/test.js",
+    "build": "echo 'No build step required for binary wrapper'",
+    "prepublishOnly": "npm test"
   },
   "files": [
-    "dist/",
+    "examples/npm/",
     "bin/",
-    "scripts/",
     "README.md",
-    "LICENSE"
+    "LICENSE-MIT"
   ],
   "keywords": [
     "ai",
@@ -45,13 +44,9 @@
   },
   "os": ["darwin", "linux", "win32"],
   "cpu": ["x64", "arm64"],
-  "dependencies": {
-    "node-fetch": "^3.3.0",
-    "tar": "^6.1.0"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@types/node": "^18.0.0",
-    "typescript": "^4.9.0"
+    "@types/node": "^18.0.0"
   },
   "optionalDependencies": {
     "@aichat/cli-darwin-x64": "0.29.0",

@@ -137,12 +137,36 @@ jobs:
             echo "archive=dist/$name.tar.gz" >> $GITHUB_OUTPUT
         fi
 
+    - name: Generate Checksums
+      shell: bash
+      id: checksums
+      env:
+        archive: ${{ steps.package.outputs.archive }}
+      run: |
+        cd `dirname $archive`
+        archive_name=`basename $archive`
+        
+        # Generate SHA256 checksum
+        if [[ "$RUNNER_OS" == "Windows" ]]; then
+          checksum=$(certutil -hashfile $archive_name SHA256 | grep -v "hash" | tr -d '\r\n ')
+        else
+          checksum=$(sha256sum $archive_name | cut -d' ' -f1)
+        fi
+        
+        echo "sha256=$checksum" >> $GITHUB_OUTPUT
+        
+        # Create checksum file
+        echo "$checksum  $archive_name" > $archive_name.sha256
+        echo "checksum_file=`pwd`/$archive_name.sha256" >> $GITHUB_OUTPUT
+
     - name: Publish Archive
       uses: softprops/action-gh-release@v2
       if: ${{ startsWith(github.ref, 'refs/tags/') }}
       with:
         draft: false
-        files: ${{ steps.package.outputs.archive }}
+        files: |
+          ${{ steps.package.outputs.archive }}
+          ${{ steps.checksums.outputs.checksum_file }}
         prerelease: ${{ steps.check-tag.outputs.rc == 'true' }}
 
   publish-crate:
