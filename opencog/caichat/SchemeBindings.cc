@@ -142,8 +142,8 @@ SCM caichat_complete(SCM session_id) {
     }
     
     try {
-        std::string response = it->second->complete();
-        return scm_from_locale_string(response.c_str());
+        ChatResponse response = it->second->complete();
+        return scm_from_locale_string(response.text.c_str());
     } catch (const std::exception& e) {
 #ifdef HAVE_OPENCOG
         logger().error("Failed to get completion: %s", e.what());
@@ -840,11 +840,11 @@ SCM caichat_route_llm_request(SCM request_scm, SCM preferred_provider_scm) {
                 
                 // Create client and get response (only in non-test mode)
                 auto client = create_client(config_it->second);
-                std::string response = client->chat_completion(messages);
+                ChatResponse response = client->chat_completion(messages);
                 
                 std::string result = "Request routed to " + selected_provider + "\n";
-                result += "Response: " + response.substr(0, RESPONSE_TRUNCATION_LIMIT);
-                if (response.length() > RESPONSE_TRUNCATION_LIMIT) {
+                result += "Response: " + response.text.substr(0, RESPONSE_TRUNCATION_LIMIT);
+                if (response.text.length() > RESPONSE_TRUNCATION_LIMIT) {
                     result += "...";
                 }
                 
@@ -865,11 +865,11 @@ SCM caichat_route_llm_request(SCM request_scm, SCM preferred_provider_scm) {
                         if (fallback_it != client_configs.end()) {
                             try {
                                 auto fallback_client = create_client(fallback_it->second);
-                                std::string response = fallback_client->chat_completion(messages);
+                                ChatResponse response = fallback_client->chat_completion(messages);
                                 
                                 std::string result = "Request routed to " + fallback_provider + " (fallback from " + selected_provider + ")\n";
-                                result += "Response: " + response.substr(0, 100);
-                                if (response.length() > 100) {
+                                result += "Response: " + response.text.substr(0, 100);
+                                if (response.text.length() > 100) {
                                     result += "...";
                                 }
                                 

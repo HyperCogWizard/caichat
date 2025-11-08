@@ -620,9 +620,8 @@ std::string SessionManager::execute_routed_request(const std::vector<Message>& m
         auto client = create_client(config);
         
         // Execute the request
-        std::string response = client->chat_completion(messages);
-        
-        return response;
+        ChatResponse response = client->chat_completion(messages);
+        return response.text;
     } catch (const std::exception& e) {
         throw std::runtime_error("Failed to execute routed request: " + std::string(e.what()));
     }
