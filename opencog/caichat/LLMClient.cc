@@ -46,6 +46,8 @@ typedef void* Handle;
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <utility>
+#include <cctype>
 
 using namespace opencog;
 using namespace opencog::caichat;
@@ -150,6 +152,218 @@ ChatResponse make_basic_text_response(const std::string& text, const UsageMetric
     response.text = text;
     response.usage = usage;
     return response;
+}
+
+struct ToolCallAccumulator {
+    std::string id;
+    std::string name;
+    std::string arguments;
+};
+
+struct OpenAIStreamState {
+    std::function<void(const ChatStreamEvent&)> callback;
+    std::string buffer;
+    bool done = false;
+    bool emitted_tool_calls = false;
+    UsageMetrics usage;
+    std::vector<ToolCallAccumulator> tool_calls;
+    std::exception_ptr error;
+};
+
+std::string trim_copy(const std::string& str) {
+    auto begin = std::find_if_not(str.begin(), str.end(), [](unsigned char ch) {
+        return std::isspace(ch);
+    });
+    auto end = std::find_if_not(str.rbegin(), str.rend(), [](unsigned char ch) {
+        return std::isspace(ch);
+    }).base();
+    if (begin >= end) {
+        return "";
+    }
+    return std::string(begin, end);
+}
+
+std::vector<ToolCall> finalize_tool_calls(const std::vector<ToolCallAccumulator>& accumulators) {
+    std::vector<ToolCall> calls;
+    calls.reserve(accumulators.size());
+    for (const auto& acc : accumulators) {
+        if (acc.id.empty() && acc.name.empty() && acc.arguments.empty()) {
+            continue;
+        }
+        ToolCall call;
+        call.id = acc.id;
+        call.name = acc.name;
+        call.arguments_json = acc.arguments;
+        calls.push_back(std::move(call));
+    }
+    return calls;
+}
+
+void dispatch_event(OpenAIStreamState& state, const ChatStreamEvent& event) {
+    if (state.error) {
+        return;
+    }
+    try {
+        state.callback(event);
+    } catch (...) {
+        state.error = std::current_exception();
+    }
+}
+
+void process_openai_sse_payload(const std::string& payload, OpenAIStreamState& state) {
+    const std::string trimmed = trim_copy(payload);
+    if (trimmed.empty()) {
+        return;
+    }
+
+    if (trimmed == "[DONE]") {
+        ChatStreamEvent done_event;
+        done_event.done = true;
+        if (!state.usage.empty()) {
+            done_event.usage = state.usage;
+        }
+        if (!state.emitted_tool_calls) {
+            auto finalized = finalize_tool_calls(state.tool_calls);
+            if (!finalized.empty()) {
+                done_event.tool_calls_delta = std::move(finalized);
+            }
+        }
+        dispatch_event(state, done_event);
+        state.done = true;
+        return;
+    }
+
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(trimmed, root)) {
+        return;
+    }
+
+    if (root.isMember("usage")) {
+        state.usage = parse_usage_metrics(root["usage"]);
+    }
+
+    const Json::Value& choices = root["choices"];
+    if (!choices.isArray() || choices.empty()) {
+        return;
+    }
+
+    const Json::Value& choice = choices[0];
+    const Json::Value& delta = choice["delta"];
+
+    ChatStreamEvent event;
+    bool has_payload = false;
+
+    if (delta.isMember("content") && delta["content"].isString()) {
+        event.text_delta = delta["content"].asString();
+        has_payload = true;
+    }
+
+    if (delta.isMember("reasoning_content") && delta["reasoning_content"].isString()) {
+        event.reasoning_delta = delta["reasoning_content"].asString();
+        has_payload = true;
+    } else if (delta.isMember("reasoning") && delta["reasoning"].isString()) {
+        event.reasoning_delta = delta["reasoning"].asString();
+        has_payload = true;
+    }
+
+    if (delta.isMember("tool_calls") && delta["tool_calls"].isArray()) {
+        for (const auto& tool_delta : delta["tool_calls"]) {
+            if (!tool_delta.isObject()) {
+                continue;
+            }
+
+            int index = tool_delta.get("index", static_cast<int>(state.tool_calls.size())).asInt();
+            if (index < 0) {
+                index = 0;
+            }
+            if (index >= static_cast<int>(state.tool_calls.size())) {
+                state.tool_calls.resize(static_cast<size_t>(index) + 1);
+            }
+
+            ToolCallAccumulator& accumulator = state.tool_calls[static_cast<size_t>(index)];
+
+            if (tool_delta.isMember("id") && tool_delta["id"].isString()) {
+                accumulator.id = tool_delta["id"].asString();
+            }
+
+            ToolCall partial;
+            if (!accumulator.id.empty()) {
+                partial.id = accumulator.id;
+            }
+
+            const Json::Value& function = tool_delta["function"];
+            if (function.isObject()) {
+                if (function.isMember("name") && function["name"].isString()) {
+                    accumulator.name = function["name"].asString();
+                }
+                if (!accumulator.name.empty()) {
+                    partial.name = accumulator.name;
+                }
+                if (function.isMember("arguments") && function["arguments"].isString()) {
+                    const std::string arguments_chunk = function["arguments"].asString();
+                    if (!arguments_chunk.empty()) {
+                        accumulator.arguments += arguments_chunk;
+                        partial.arguments_json = arguments_chunk;
+                    }
+                }
+            }
+
+            if (!partial.id.empty() || !partial.name.empty() || !partial.arguments_json.empty()) {
+                event.tool_calls_delta.push_back(partial);
+                state.emitted_tool_calls = true;
+                has_payload = true;
+            }
+        }
+    }
+
+    if (!has_payload) {
+        return;
+    }
+
+    if (!state.usage.empty()) {
+        event.usage = state.usage;
+    }
+    dispatch_event(state, event);
+}
+
+size_t openai_stream_write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* state = static_cast<OpenAIStreamState*>(userdata);
+    if (!state || state->error) {
+        return 0;
+    }
+
+    const size_t total_size = size * nmemb;
+    state->buffer.append(ptr, total_size);
+
+    size_t separator_pos = std::string::npos;
+    while ((separator_pos = state->buffer.find("\n\n")) != std::string::npos) {
+        std::string event = state->buffer.substr(0, separator_pos);
+        state->buffer.erase(0, separator_pos + 2);
+
+        if (event.rfind("data:", 0) == 0) {
+            std::string data_payload;
+            std::stringstream ss(event);
+            std::string line;
+            while (std::getline(ss, line)) {
+                if (line.rfind("data:", 0) == 0) {
+                    std::string value = line.substr(5);
+                    if (!data_payload.empty()) {
+                        data_payload.push_back('\n');
+                    }
+                    data_payload += trim_copy(value);
+                }
+            }
+            if (!data_payload.empty()) {
+                process_openai_sse_payload(data_payload, *state);
+                if (state->error) {
+                    return 0;
+                }
+            }
+        }
+    }
+
+    return total_size;
 }
 
 } // namespace
@@ -292,23 +506,82 @@ void OpenAIClient::chat_completion_stream(
     const std::vector<Message>& messages,
     std::function<void(const ChatStreamEvent&)> callback) {
     
-    // Temporary implementation - reuse non-streaming response to provide deltas
-    ChatResponse response = chat_completion(messages);
-
-    ChatStreamEvent reasoning_event;
-    if (!response.reasoning.empty()) {
-        reasoning_event.reasoning_delta = response.reasoning;
-        callback(reasoning_event);
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        throw std::runtime_error("Failed to initialize curl");
     }
 
-    ChatStreamEvent text_event;
-    text_event.text_delta = response.assistant_content;
-    text_event.tool_calls_delta = response.tool_calls;
-    callback(text_event);
+    Json::Value request;
+    request["model"] = config_.model;
+    request["temperature"] = config_.temperature;
+    request["top_p"] = config_.top_p;
+    if (config_.max_tokens > 0) {
+        request["max_tokens"] = config_.max_tokens;
+    }
 
-    ChatStreamEvent done_event;
-    done_event.done = true;
-    callback(done_event);
+    Json::Value messages_json(Json::arrayValue);
+    for (const auto& msg : messages) {
+        Json::Value msg_json;
+        msg_json["role"] = msg.role;
+        msg_json["content"] = msg.content;
+        messages_json.append(msg_json);
+    }
+    request["messages"] = messages_json;
+    request["stream"] = true;
+    Json::Value stream_options;
+    stream_options["include_usage"] = true;
+    request["stream_options"] = stream_options;
+
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "";
+    std::string json_string = Json::writeString(builder, request);
+
+    std::string url = config_.api_base + "/chat/completions";
+    struct curl_slist* headers = nullptr;
+    std::string auth_header = "Authorization: Bearer " + config_.api_key;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, auth_header.c_str());
+
+    OpenAIStreamState state;
+    state.callback = std::move(callback);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_string.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(json_string.size()));
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, openai_stream_write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (state.error) {
+        std::rethrow_exception(state.error);
+    }
+
+    if (res != CURLE_OK) {
+        throw std::runtime_error("Curl request failed: " + std::string(curl_easy_strerror(res)));
+    }
+
+    if (!state.done) {
+        ChatStreamEvent done_event;
+        done_event.done = true;
+        if (!state.usage.empty()) {
+            done_event.usage = state.usage;
+        }
+        auto finalized = finalize_tool_calls(state.tool_calls);
+        if (!finalized.empty()) {
+            done_event.tool_calls_delta = std::move(finalized);
+        }
+        dispatch_event(state, done_event);
+        if (state.error) {
+            std::rethrow_exception(state.error);
+        }
+    }
 }
 
 std::vector<double> OpenAIClient::embeddings(const std::string& text) {
@@ -517,6 +790,9 @@ void ClaudeClient::chat_completion_stream(
 
     ChatStreamEvent done_event;
     done_event.done = true;
+    if (!response.usage.empty()) {
+        done_event.usage = response.usage;
+    }
     callback(done_event);
 }
 
@@ -672,6 +948,9 @@ void GeminiClient::chat_completion_stream(
 
     ChatStreamEvent done_event;
     done_event.done = true;
+    if (!response.usage.empty()) {
+        done_event.usage = response.usage;
+    }
     callback(done_event);
 }
 
@@ -802,6 +1081,9 @@ void OllamaClient::chat_completion_stream(
 
     ChatStreamEvent done_event;
     done_event.done = true;
+    if (!response.usage.empty()) {
+        done_event.usage = response.usage;
+    }
     callback(done_event);
 }
 
@@ -938,6 +1220,9 @@ void GroqClient::chat_completion_stream(
 
     ChatStreamEvent done_event;
     done_event.done = true;
+    if (!response.usage.empty()) {
+        done_event.usage = response.usage;
+    }
     callback(done_event);
 }
 
@@ -1070,6 +1355,9 @@ void GGMLClient::chat_completion_stream(
 
     ChatStreamEvent done_event;
     done_event.done = true;
+    if (!response.usage.empty()) {
+        done_event.usage = response.usage;
+    }
     callback(done_event);
 }
 
@@ -1139,7 +1427,7 @@ std::string GGMLClient::cognitive_completion(const std::vector<Message>& message
         "Focus on structured, logical representations of knowledge.");
     enhanced_messages.insert(enhanced_messages.begin(), cognitive_instruction);
     
-    return chat_completion(enhanced_messages);
+    return chat_completion(enhanced_messages).text;
 }
 
 bool GGMLClient::init_ggml_context() {

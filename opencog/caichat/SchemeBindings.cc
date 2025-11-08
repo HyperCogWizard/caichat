@@ -11,6 +11,7 @@
 #include <ctime>
 #include <map>
 #include <algorithm>
+#include <json/json.h>
 
 #ifdef HAVE_OPENCOG
 #include <opencog/guile/SchemeModule.h>
@@ -48,6 +49,55 @@ static std::unique_ptr<SessionManager> session_manager;
 static std::unique_ptr<NeuralSymbolicBridge> neural_bridge;
 static std::unique_ptr<LLMProviderRouter> global_router;
 static bool test_mode_enabled = false;
+
+namespace {
+constexpr size_t REQUEST_TRUNCATION_LENGTH = 120;
+constexpr size_t RESPONSE_TRUNCATION_LIMIT = 200;
+}
+
+static Json::Value usage_metrics_to_json(const UsageMetrics& usage) {
+    Json::Value value(Json::objectValue);
+    if (usage.prompt_tokens.has_value()) {
+        value["prompt_tokens"] = Json::Int64(usage.prompt_tokens.value());
+    }
+    if (usage.completion_tokens.has_value()) {
+        value["completion_tokens"] = Json::Int64(usage.completion_tokens.value());
+    }
+    return value;
+}
+
+static std::string chat_response_to_json_string(const ChatResponse& response) {
+    Json::Value root(Json::objectValue);
+    root["text"] = response.text;
+    root["assistant_content"] = response.assistant_content;
+    root["reasoning"] = response.reasoning;
+
+    if (response.id.has_value()) {
+        root["id"] = response.id.value();
+    }
+
+    Json::Value tool_calls(Json::arrayValue);
+    for (const auto& call : response.tool_calls) {
+        Json::Value call_json(Json::objectValue);
+        call_json["id"] = call.id;
+        call_json["name"] = call.name;
+        call_json["arguments"] = call.arguments_json;
+        tool_calls.append(call_json);
+    }
+    root["tool_calls"] = tool_calls;
+
+    if (!response.usage.empty()) {
+        root["usage"] = usage_metrics_to_json(response.usage);
+    }
+
+    if (!response.raw_json.empty()) {
+        root["raw_json"] = response.raw_json;
+    }
+
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "";
+    return Json::writeString(builder, root);
+}
 
 /**
  * Create a new LLM client configuration
@@ -149,6 +199,31 @@ SCM caichat_complete(SCM session_id) {
         logger().error("Failed to get completion: %s", e.what());
 #else
         std::cerr << "Failed to get completion: " << e.what() << std::endl;
+#endif
+        return SCM_BOOL_F;
+    }
+}
+
+/**
+ * Get the most recent structured response for a session as JSON
+ */
+SCM caichat_last_response(SCM session_id) {
+    std::string session_id_str = scm_to_locale_string(session_id);
+    
+    auto it = completions.find(session_id_str);
+    if (it == completions.end()) {
+        return SCM_BOOL_F;
+    }
+    
+    const ChatResponse& response = it->second->last_response();
+    try {
+        std::string json = chat_response_to_json_string(response);
+        return scm_from_locale_string(json.c_str());
+    } catch (const std::exception& e) {
+#ifdef HAVE_OPENCOG
+        logger().error("Failed to serialize last response: %s", e.what());
+#else
+        std::cerr << "Failed to serialize last response: " << e.what() << std::endl;
 #endif
         return SCM_BOOL_F;
     }
@@ -650,27 +725,23 @@ SCM caichat_map_opencog_api(SCM functions_list) {
  */
 SCM caichat_init_llm_provider(SCM backends_list) {
     try {
-        std::vector<std::string> backends;
-        
+        std::vector<std::string> requested_backends;
         if (scm_is_pair(backends_list)) {
             SCM current = backends_list;
             while (!scm_is_null(current)) {
                 SCM backend = scm_car(current);
                 if (scm_is_string(backend)) {
-                    std::string backend_name = scm_to_locale_string(backend);
-                    backends.push_back(backend_name);
+                    requested_backends.emplace_back(scm_to_locale_string(backend));
                 }
                 current = scm_cdr(current);
             }
         }
         
-        // Initialize global router if not already done
         if (!global_router) {
             global_router = std::make_unique<LLMProviderRouter>();
             global_router->init_default_providers();
         }
         
-        // Initialize session manager with router
         if (!session_manager) {
 #ifdef HAVE_OPENCOG
             AtomSpace* as = get_current_atomspace();
@@ -680,72 +751,48 @@ SCM caichat_init_llm_provider(SCM backends_list) {
             session_manager = std::make_unique<SessionManager>(as);
         }
         
-// <<<<<<< copilot/fix-13-2
-        // Get available providers from the router (which auto-initializes default providers)
-        std::vector<std::string> available_providers = session_manager->get_available_providers("chat");
-        
-        // Filter requested backends against available providers
-        std::vector<std::string> initialized_providers;
-        for (const auto& backend : backends) {
-            auto it = std::find(available_providers.begin(), available_providers.end(), backend);
-            if (it != available_providers.end()) {
-                initialized_providers.push_back(backend);
-            }
-        }
-        
-        std::string result = "Initialized LLM providers: ";
-        for (const auto& provider : initialized_providers) {
-            result += provider + " ";
-        }
-        
-        // If no specific backends were requested, show all available
-        if (backends.empty()) {
-            result = "All available LLM providers initialized: ";
-            for (const auto& provider : available_providers) {
-                result += provider + " ";
-// =======
-        // Validate and register each requested backend
-        std::string result = "Initialized LLM providers: ";
         std::vector<std::string> available_providers = global_router->get_available_providers("chat");
+        if (requested_backends.empty()) {
+            requested_backends = available_providers;
+        }
         
-        for (const auto& backend : backends) {
-            // Check if provider is supported
-            auto it = std::find(available_providers.begin(), available_providers.end(), backend);
-            if (it != available_providers.end()) {
-                // Create a default client configuration for this provider
-                ClientConfig config;
-                config.provider = backend;
-                
-                // Set provider-specific defaults
-                if (backend == "openai") {
-                    config.model = "gpt-3.5-turbo";
-                    config.api_base = "https://api.openai.com/v1";
-                } else if (backend == "claude") {
-                    config.model = "claude-3-sonnet-20240229";
-                    config.api_base = "https://api.anthropic.com";
-                } else if (backend == "gemini") {
-                    config.model = "gemini-pro";
-                    config.api_base = "https://generativelanguage.googleapis.com";
-                } else if (backend == "ollama") {
-                    config.model = "llama2";
-                    config.api_base = "http://localhost:11434";
-                } else if (backend == "groq") {
-                    config.model = "mixtral-8x7b-32768";
-                    config.api_base = "https://api.groq.com/openai";
-                } else if (backend == "ggml") {
-                    config.model = "/path/to/model.ggml";  // Will be set later
-                    config.api_base = "local";
-                }
-                
-                // Store the configuration for later use
-                std::string config_id = backend + ":default";
-                client_configs[config_id] = config;
-                
-                result += backend + " ";
-            } else {
+        auto is_available = [&](const std::string& backend) {
+            return std::find(available_providers.begin(), available_providers.end(), backend) != available_providers.end();
+        };
+        
+        std::string result = "Initialized LLM providers: ";
+        for (const auto& backend : requested_backends) {
+            if (!is_available(backend)) {
                 result += "[UNSUPPORTED:" + backend + "] ";
-// >>>>>>> main
+                continue;
             }
+            
+            ClientConfig config;
+            config.provider = backend;
+            
+            if (backend == "openai") {
+                config.model = "gpt-3.5-turbo";
+                config.api_base = "https://api.openai.com/v1";
+            } else if (backend == "claude") {
+                config.model = "claude-3-sonnet-20240229";
+                config.api_base = "https://api.anthropic.com";
+            } else if (backend == "gemini") {
+                config.model = "gemini-pro";
+                config.api_base = "https://generativelanguage.googleapis.com";
+            } else if (backend == "ollama") {
+                config.model = "llama2";
+                config.api_base = "http://localhost:11434";
+            } else if (backend == "groq") {
+                config.model = "mixtral-8x7b-32768";
+                config.api_base = "https://api.groq.com/openai";
+            } else if (backend == "ggml") {
+                config.model = "/path/to/model.ggml";
+                config.api_base = "local";
+            }
+            
+            std::string config_id = backend + ":default";
+            client_configs[config_id] = config;
+            result += backend + " ";
         }
         
         return scm_from_locale_string(result.c_str());
@@ -829,8 +876,8 @@ SCM caichat_route_llm_request(SCM request_scm, SCM preferred_provider_scm) {
                     if (!preferred_provider.empty()) {
                         result += " (preferred: " + preferred_provider + ")";
                     }
-                    result += "\nTest mode response: Successfully routed '" + request_str.substr(0, TRUNCATION_LENGTH);
-                    if (request_str.length() > TRUNCATION_LENGTH) {
+                    result += "\nTest mode response: Successfully routed '" + request_str.substr(0, REQUEST_TRUNCATION_LENGTH);
+                    if (request_str.length() > REQUEST_TRUNCATION_LENGTH) {
                         result += "...";
                     }
                     result += "' to " + selected_provider + " provider.";
@@ -918,7 +965,9 @@ void opencog_caichat_init() {
     scm_c_define_gsubr("caichat-add-message", 3, 0, 0, 
                        (scm_t_subr) caichat_add_message);
     scm_c_define_gsubr("caichat-complete", 1, 0, 0, 
-                       (scm_t_subr) caichat_complete);
+                        (scm_t_subr) caichat_complete);
+    scm_c_define_gsubr("caichat-last-response", 1, 0, 0,
+                       (scm_t_subr) caichat_last_response);
     scm_c_define_gsubr("caichat-clear-history", 1, 0, 0, 
                        (scm_t_subr) caichat_clear_history);
     scm_c_define_gsubr("caichat-save-conversation", 2, 0, 0, 

@@ -87,6 +87,7 @@ struct ChatStreamEvent {
     std::string text_delta;
     std::string reasoning_delta;
     std::vector<ToolCall> tool_calls_delta;
+    std::optional<UsageMetrics> usage;
     bool done = false;
 };
 

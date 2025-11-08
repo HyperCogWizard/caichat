@@ -136,6 +136,31 @@ ChatResponse ChatCompletion::complete_stream(std::function<void(const std::strin
         bool reasoning_open = false;
         bool reasoning_closed = false;
         
+        auto merge_tool_call = [&](const ToolCall& delta) {
+            for (auto& existing : aggregated.tool_calls) {
+                bool match = false;
+                if (!delta.id.empty() && !existing.id.empty()) {
+                    match = (existing.id == delta.id);
+                } else if (!delta.name.empty() && existing.name == delta.name) {
+                    match = true;
+                }
+                
+                if (match) {
+                    if (!delta.id.empty() && existing.id.empty()) {
+                        existing.id = delta.id;
+                    }
+                    if (!delta.name.empty() && existing.name.empty()) {
+                        existing.name = delta.name;
+                    }
+                    if (!delta.arguments_json.empty()) {
+                        existing.arguments_json += delta.arguments_json;
+                    }
+                    return;
+                }
+            }
+            aggregated.tool_calls.push_back(delta);
+        };
+        
         client_->chat_completion_stream(conversation_, [&](const ChatStreamEvent& event) {
             if (!event.reasoning_delta.empty()) {
                 if (!reasoning_open) {
@@ -157,10 +182,13 @@ ChatResponse ChatCompletion::complete_stream(std::function<void(const std::strin
             }
 
             if (!event.tool_calls_delta.empty()) {
-                aggregated.tool_calls.insert(
-                    aggregated.tool_calls.end(),
-                    event.tool_calls_delta.begin(),
-                    event.tool_calls_delta.end());
+                for (const auto& tool_delta : event.tool_calls_delta) {
+                    merge_tool_call(tool_delta);
+                }
+            }
+
+            if (event.usage.has_value()) {
+                aggregated.usage = event.usage.value();
             }
         });
 
