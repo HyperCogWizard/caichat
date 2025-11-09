@@ -40,12 +40,12 @@ public:
     /**
      * Get completion for the current conversation
      */
-    std::string complete();
+    ChatResponse complete();
     
     /**
      * Stream completion for the current conversation
      */
-    void complete_stream(std::function<void(const std::string&)> callback);
+    ChatResponse complete_stream(std::function<void(const std::string&)> callback);
     
     /**
      * Clear conversation history
@@ -82,11 +82,17 @@ public:
      */
     LLMClient* get_client() const;
 
+    /**
+     * Get the most recent completion response (non-const reference for modifications)
+     */
+    const ChatResponse& last_response() const;
+
 private:
     AtomSpace* atomspace_;
     std::unique_ptr<LLMClient> client_;
     std::vector<Message> conversation_;
     std::string conversation_id_;
+    ChatResponse last_response_;
 };
 
 } // namespace caichat

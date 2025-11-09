@@ -37,8 +37,39 @@ namespace opencog {
 using namespace opencog;
 using namespace opencog::caichat;
 
+namespace {
+
+std::string compose_display_text(const std::string& content, const std::string& reasoning) {
+    if (content.empty() && reasoning.empty()) {
+        return "";
+    }
+    if (reasoning.empty()) {
+        return content;
+    }
+
+    std::string combined;
+    combined.reserve(reasoning.size() + content.size() + 16);
+    combined.append("<think>\n");
+    combined.append(reasoning);
+    combined.append("\n</think>\n\n");
+    combined.append(content);
+    return combined;
+}
+
+void normalize_response(ChatResponse& response) {
+    if (response.assistant_content.empty()) {
+        response.assistant_content = response.text;
+    }
+
+    if (response.text.empty()) {
+        response.text = compose_display_text(response.assistant_content, response.reasoning);
+    }
+}
+
+} // namespace
+
 ChatCompletion::ChatCompletion(AtomSpace* atomspace, std::unique_ptr<LLMClient> client)
-    : atomspace_(atomspace), client_(std::move(client)) {
+    : atomspace_(atomspace), client_(std::move(client)), last_response_() {
 #ifdef HAVE_OPENCOG
     conversation_id_ = uuid();
 #else
@@ -61,18 +92,25 @@ void ChatCompletion::add_message(const std::string& role, const std::string& con
 #endif
 }
 
-std::string ChatCompletion::complete() {
+ChatResponse ChatCompletion::complete() {
+    if (!client_) {
+        throw std::runtime_error("No LLM client configured");
+    }
+
     if (conversation_.empty()) {
         throw std::runtime_error("No messages in conversation");
     }
     
     try {
-        std::string response = client_->chat_completion(conversation_);
+        ChatResponse response = client_->chat_completion(conversation_);
+        normalize_response(response);
+        last_response_ = response;
         
-        // Add assistant response to conversation
-        add_message("assistant", response);
+        if (!last_response_.text.empty()) {
+            add_message("assistant", last_response_.text);
+        }
         
-        return response;
+        return last_response_;
     } catch (const std::exception& e) {
 #ifdef HAVE_OPENCOG
         logger().error("Chat completion failed: %s", e.what());
@@ -83,25 +121,91 @@ std::string ChatCompletion::complete() {
     }
 }
 
-void ChatCompletion::complete_stream(std::function<void(const std::string&)> callback) {
+ChatResponse ChatCompletion::complete_stream(std::function<void(const std::string&)> callback) {
+    if (!client_) {
+        throw std::runtime_error("No LLM client configured");
+    }
+
     if (conversation_.empty()) {
         throw std::runtime_error("No messages in conversation");
     }
     
     try {
-        // Create a wrapper callback that also stores the response
-        std::string full_response;
-        auto wrapper_callback = [&](const std::string& chunk) {
-            full_response += chunk;
-            callback(chunk);
+        ChatResponse aggregated;
+        std::string content_delta;
+        bool reasoning_open = false;
+        bool reasoning_closed = false;
+        
+        auto merge_tool_call = [&](const ToolCall& delta) {
+            for (auto& existing : aggregated.tool_calls) {
+                bool match = false;
+                if (!delta.id.empty() && !existing.id.empty()) {
+                    match = (existing.id == delta.id);
+                } else if (!delta.name.empty() && existing.name == delta.name) {
+                    match = true;
+                }
+                
+                if (match) {
+                    if (!delta.id.empty() && existing.id.empty()) {
+                        existing.id = delta.id;
+                    }
+                    if (!delta.name.empty() && existing.name.empty()) {
+                        existing.name = delta.name;
+                    }
+                    if (!delta.arguments_json.empty()) {
+                        existing.arguments_json += delta.arguments_json;
+                    }
+                    return;
+                }
+            }
+            aggregated.tool_calls.push_back(delta);
         };
         
-        client_->chat_completion_stream(conversation_, wrapper_callback);
-        
-        // Add complete assistant response to conversation
-        if (!full_response.empty()) {
-            add_message("assistant", full_response);
+        client_->chat_completion_stream(conversation_, [&](const ChatStreamEvent& event) {
+            if (!event.reasoning_delta.empty()) {
+                if (!reasoning_open) {
+                    callback("<think>\n");
+                    reasoning_open = true;
+                }
+                aggregated.reasoning += event.reasoning_delta;
+                callback(event.reasoning_delta);
+            }
+
+            if (!event.text_delta.empty()) {
+                if (reasoning_open && !reasoning_closed) {
+                    callback("\n</think>\n\n");
+                    reasoning_open = false;
+                    reasoning_closed = true;
+                }
+                content_delta += event.text_delta;
+                callback(event.text_delta);
+            }
+
+            if (!event.tool_calls_delta.empty()) {
+                for (const auto& tool_delta : event.tool_calls_delta) {
+                    merge_tool_call(tool_delta);
+                }
+            }
+
+            if (event.usage.has_value()) {
+                aggregated.usage = event.usage.value();
+            }
+        });
+
+        if (reasoning_open && !reasoning_closed) {
+            callback("\n</think>\n\n");
         }
+
+        aggregated.assistant_content = content_delta;
+        aggregated.text = compose_display_text(aggregated.assistant_content, aggregated.reasoning);
+        normalize_response(aggregated);
+        last_response_ = aggregated;
+        
+        if (!last_response_.text.empty()) {
+            add_message("assistant", last_response_.text);
+        }
+
+        return last_response_;
     } catch (const std::exception& e) {
 #ifdef HAVE_OPENCOG
         logger().error("Streaming completion failed: %s", e.what());
@@ -226,4 +330,8 @@ std::vector<Message> ChatCompletion::get_messages() {
 
 LLMClient* ChatCompletion::get_client() const {
     return client_.get();
+}
+
+const ChatResponse& ChatCompletion::last_response() const {
+    return last_response_;
 }

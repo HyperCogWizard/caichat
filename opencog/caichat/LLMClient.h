@@ -13,6 +13,8 @@
 #include <map>
 #include <memory>
 #include <functional>
+#include <optional>
+#include <cstdint>
 
 #ifdef HAVE_OPENCOG
 #include <opencog/atomspace/AtomSpace.h>
@@ -40,6 +42,56 @@ struct Message {
 };
 
 /**
+ * Representation of a tool/function call returned by an LLM response
+ */
+struct ToolCall {
+    std::string id;
+    std::string name;
+    std::string arguments_json;
+
+    bool has_id() const { return !id.empty(); }
+    bool has_arguments() const { return !arguments_json.empty(); }
+};
+
+/**
+ * Usage statistics returned by LLM providers
+ */
+struct UsageMetrics {
+    std::optional<int64_t> prompt_tokens;
+    std::optional<int64_t> completion_tokens;
+
+    bool empty() const {
+        return !prompt_tokens.has_value() && !completion_tokens.has_value();
+    }
+};
+
+/**
+ * Structured chat completion response
+ */
+struct ChatResponse {
+    std::string text;                 // Final text to append to conversation (may include reasoning markup)
+    std::string assistant_content;    // Raw assistant content field (without reasoning markup)
+    std::string reasoning;            // Reasoning/chain-of-thought segment (if provided)
+    std::vector<ToolCall> tool_calls; // Tool/function calls returned alongside the message
+    std::optional<std::string> id;    // Provider-specific response identifier
+    UsageMetrics usage;               // Token usage metrics
+    std::string raw_json;             // Raw JSON payload (for auditing/debugging)
+
+    bool has_tool_calls() const { return !tool_calls.empty(); }
+};
+
+/**
+ * Streaming delta event emitted during chat completion streaming
+ */
+struct ChatStreamEvent {
+    std::string text_delta;
+    std::string reasoning_delta;
+    std::vector<ToolCall> tool_calls_delta;
+    std::optional<UsageMetrics> usage;
+    bool done = false;
+};
+
+/**
  * Configuration for LLM clients
  */
 struct ClientConfig {
@@ -63,14 +115,14 @@ public:
     /**
      * Send chat completion request
      */
-    virtual std::string chat_completion(const std::vector<Message>& messages) = 0;
+    virtual ChatResponse chat_completion(const std::vector<Message>& messages) = 0;
     
     /**
      * Send streaming chat completion request
      */
     virtual void chat_completion_stream(
         const std::vector<Message>& messages,
-        std::function<void(const std::string&)> callback) = 0;
+        std::function<void(const ChatStreamEvent&)> callback) = 0;
     
     /**
      * Generate embeddings for text
@@ -88,10 +140,10 @@ class OpenAIClient : public LLMClient {
 public:
     OpenAIClient(const ClientConfig& config);
     
-    std::string chat_completion(const std::vector<Message>& messages) override;
+    ChatResponse chat_completion(const std::vector<Message>& messages) override;
     void chat_completion_stream(
         const std::vector<Message>& messages,
-        std::function<void(const std::string&)> callback) override;
+        std::function<void(const ChatStreamEvent&)> callback) override;
     std::vector<double> embeddings(const std::string& text) override;
 };
 
@@ -102,10 +154,10 @@ class ClaudeClient : public LLMClient {
 public:
     ClaudeClient(const ClientConfig& config);
     
-    std::string chat_completion(const std::vector<Message>& messages) override;
+    ChatResponse chat_completion(const std::vector<Message>& messages) override;
     void chat_completion_stream(
         const std::vector<Message>& messages,
-        std::function<void(const std::string&)> callback) override;
+        std::function<void(const ChatStreamEvent&)> callback) override;
     std::vector<double> embeddings(const std::string& text) override;
 };
 
@@ -116,10 +168,10 @@ class GeminiClient : public LLMClient {
 public:
     GeminiClient(const ClientConfig& config);
     
-    std::string chat_completion(const std::vector<Message>& messages) override;
+    ChatResponse chat_completion(const std::vector<Message>& messages) override;
     void chat_completion_stream(
         const std::vector<Message>& messages,
-        std::function<void(const std::string&)> callback) override;
+        std::function<void(const ChatStreamEvent&)> callback) override;
     std::vector<double> embeddings(const std::string& text) override;
 };
 
@@ -130,10 +182,10 @@ class OllamaClient : public LLMClient {
 public:
     OllamaClient(const ClientConfig& config);
     
-    std::string chat_completion(const std::vector<Message>& messages) override;
+    ChatResponse chat_completion(const std::vector<Message>& messages) override;
     void chat_completion_stream(
         const std::vector<Message>& messages,
-        std::function<void(const std::string&)> callback) override;
+        std::function<void(const ChatStreamEvent&)> callback) override;
     std::vector<double> embeddings(const std::string& text) override;
 };
 
@@ -144,10 +196,10 @@ class GroqClient : public LLMClient {
 public:
     GroqClient(const ClientConfig& config);
     
-    std::string chat_completion(const std::vector<Message>& messages) override;
+    ChatResponse chat_completion(const std::vector<Message>& messages) override;
     void chat_completion_stream(
         const std::vector<Message>& messages,
-        std::function<void(const std::string&)> callback) override;
+        std::function<void(const ChatStreamEvent&)> callback) override;
     std::vector<double> embeddings(const std::string& text) override;
 };
 
@@ -175,10 +227,10 @@ public:
     GGMLClient(const ClientConfig& config, const GGMLConfig& ggml_config);
     ~GGMLClient();
     
-    std::string chat_completion(const std::vector<Message>& messages) override;
+    ChatResponse chat_completion(const std::vector<Message>& messages) override;
     void chat_completion_stream(
         const std::vector<Message>& messages,
-        std::function<void(const std::string&)> callback) override;
+        std::function<void(const ChatStreamEvent&)> callback) override;
     std::vector<double> embeddings(const std::string& text) override;
     
     /**

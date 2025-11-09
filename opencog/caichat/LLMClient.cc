@@ -46,12 +46,327 @@ typedef void* Handle;
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <utility>
+#include <cctype>
 
 using namespace opencog;
 using namespace opencog::caichat;
 
 namespace opencog {
 namespace caichat {
+
+namespace {
+
+std::string combine_reasoning_and_text(const std::string& content, const std::string& reasoning) {
+    if (content.empty() && reasoning.empty()) {
+        return "";
+    }
+    if (reasoning.empty()) {
+        return content;
+    }
+
+    std::string combined;
+    combined.reserve(reasoning.size() + content.size() + 16);
+    combined.append("<think>\n");
+    combined.append(reasoning);
+    combined.append("\n</think>\n\n");
+    combined.append(content);
+    return combined;
+}
+
+UsageMetrics parse_usage_metrics(const Json::Value& usage_node) {
+    UsageMetrics usage;
+    if (!usage_node.isObject()) {
+        return usage;
+    }
+
+    if (usage_node.isMember("prompt_tokens")) {
+        if (usage_node["prompt_tokens"].isInt64()) {
+            usage.prompt_tokens = usage_node["prompt_tokens"].asInt64();
+        } else if (usage_node["prompt_tokens"].isInt()) {
+            usage.prompt_tokens = usage_node["prompt_tokens"].asInt();
+        }
+    } else if (usage_node.isMember("input_tokens")) {
+        if (usage_node["input_tokens"].isInt64()) {
+            usage.prompt_tokens = usage_node["input_tokens"].asInt64();
+        } else if (usage_node["input_tokens"].isInt()) {
+            usage.prompt_tokens = usage_node["input_tokens"].asInt();
+        }
+    } else if (usage_node.isMember("promptTokenCount")) {
+        if (usage_node["promptTokenCount"].isInt64()) {
+            usage.prompt_tokens = usage_node["promptTokenCount"].asInt64();
+        } else if (usage_node["promptTokenCount"].isInt()) {
+            usage.prompt_tokens = usage_node["promptTokenCount"].asInt();
+        }
+    }
+
+    if (usage_node.isMember("completion_tokens")) {
+        if (usage_node["completion_tokens"].isInt64()) {
+            usage.completion_tokens = usage_node["completion_tokens"].asInt64();
+        } else if (usage_node["completion_tokens"].isInt()) {
+            usage.completion_tokens = usage_node["completion_tokens"].asInt();
+        }
+    } else if (usage_node.isMember("output_tokens")) {
+        if (usage_node["output_tokens"].isInt64()) {
+            usage.completion_tokens = usage_node["output_tokens"].asInt64();
+        } else if (usage_node["output_tokens"].isInt()) {
+            usage.completion_tokens = usage_node["output_tokens"].asInt();
+        }
+    } else if (usage_node.isMember("candidatesTokenCount")) {
+        if (usage_node["candidatesTokenCount"].isInt64()) {
+            usage.completion_tokens = usage_node["candidatesTokenCount"].asInt64();
+        } else if (usage_node["candidatesTokenCount"].isInt()) {
+            usage.completion_tokens = usage_node["candidatesTokenCount"].asInt();
+        }
+    }
+
+    return usage;
+}
+
+ToolCall parse_openai_tool_call(const Json::Value& tool_call_json) {
+    ToolCall call;
+    if (!tool_call_json.isObject()) {
+        return call;
+    }
+
+    if (tool_call_json.isMember("id") && tool_call_json["id"].isString()) {
+        call.id = tool_call_json["id"].asString();
+    }
+
+    const Json::Value& function = tool_call_json["function"];
+    if (function.isObject()) {
+        if (function.isMember("name") && function["name"].isString()) {
+            call.name = function["name"].asString();
+        }
+        if (function.isMember("arguments") && function["arguments"].isString()) {
+            call.arguments_json = function["arguments"].asString();
+        }
+    }
+
+    return call;
+}
+
+ChatResponse make_basic_text_response(const std::string& text, const UsageMetrics& usage = UsageMetrics{}) {
+    ChatResponse response;
+    response.assistant_content = text;
+    response.text = text;
+    response.usage = usage;
+    return response;
+}
+
+struct ToolCallAccumulator {
+    std::string id;
+    std::string name;
+    std::string arguments;
+};
+
+struct OpenAIStreamState {
+    std::function<void(const ChatStreamEvent&)> callback;
+    std::string buffer;
+    bool done = false;
+    bool emitted_tool_calls = false;
+    UsageMetrics usage;
+    std::vector<ToolCallAccumulator> tool_calls;
+    std::exception_ptr error;
+};
+
+std::string trim_copy(const std::string& str) {
+    auto begin = std::find_if_not(str.begin(), str.end(), [](unsigned char ch) {
+        return std::isspace(ch);
+    });
+    auto end = std::find_if_not(str.rbegin(), str.rend(), [](unsigned char ch) {
+        return std::isspace(ch);
+    }).base();
+    if (begin >= end) {
+        return "";
+    }
+    return std::string(begin, end);
+}
+
+std::vector<ToolCall> finalize_tool_calls(const std::vector<ToolCallAccumulator>& accumulators) {
+    std::vector<ToolCall> calls;
+    calls.reserve(accumulators.size());
+    for (const auto& acc : accumulators) {
+        if (acc.id.empty() && acc.name.empty() && acc.arguments.empty()) {
+            continue;
+        }
+        ToolCall call;
+        call.id = acc.id;
+        call.name = acc.name;
+        call.arguments_json = acc.arguments;
+        calls.push_back(std::move(call));
+    }
+    return calls;
+}
+
+void dispatch_event(OpenAIStreamState& state, const ChatStreamEvent& event) {
+    if (state.error) {
+        return;
+    }
+    try {
+        state.callback(event);
+    } catch (...) {
+        state.error = std::current_exception();
+    }
+}
+
+void process_openai_sse_payload(const std::string& payload, OpenAIStreamState& state) {
+    const std::string trimmed = trim_copy(payload);
+    if (trimmed.empty()) {
+        return;
+    }
+
+    if (trimmed == "[DONE]") {
+        ChatStreamEvent done_event;
+        done_event.done = true;
+        if (!state.usage.empty()) {
+            done_event.usage = state.usage;
+        }
+        if (!state.emitted_tool_calls) {
+            auto finalized = finalize_tool_calls(state.tool_calls);
+            if (!finalized.empty()) {
+                done_event.tool_calls_delta = std::move(finalized);
+            }
+        }
+        dispatch_event(state, done_event);
+        state.done = true;
+        return;
+    }
+
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(trimmed, root)) {
+        return;
+    }
+
+    if (root.isMember("usage")) {
+        state.usage = parse_usage_metrics(root["usage"]);
+    }
+
+    const Json::Value& choices = root["choices"];
+    if (!choices.isArray() || choices.empty()) {
+        return;
+    }
+
+    const Json::Value& choice = choices[0];
+    const Json::Value& delta = choice["delta"];
+
+    ChatStreamEvent event;
+    bool has_payload = false;
+
+    if (delta.isMember("content") && delta["content"].isString()) {
+        event.text_delta = delta["content"].asString();
+        has_payload = true;
+    }
+
+    if (delta.isMember("reasoning_content") && delta["reasoning_content"].isString()) {
+        event.reasoning_delta = delta["reasoning_content"].asString();
+        has_payload = true;
+    } else if (delta.isMember("reasoning") && delta["reasoning"].isString()) {
+        event.reasoning_delta = delta["reasoning"].asString();
+        has_payload = true;
+    }
+
+    if (delta.isMember("tool_calls") && delta["tool_calls"].isArray()) {
+        for (const auto& tool_delta : delta["tool_calls"]) {
+            if (!tool_delta.isObject()) {
+                continue;
+            }
+
+            int index = tool_delta.get("index", static_cast<int>(state.tool_calls.size())).asInt();
+            if (index < 0) {
+                index = 0;
+            }
+            if (index >= static_cast<int>(state.tool_calls.size())) {
+                state.tool_calls.resize(static_cast<size_t>(index) + 1);
+            }
+
+            ToolCallAccumulator& accumulator = state.tool_calls[static_cast<size_t>(index)];
+
+            if (tool_delta.isMember("id") && tool_delta["id"].isString()) {
+                accumulator.id = tool_delta["id"].asString();
+            }
+
+            ToolCall partial;
+            if (!accumulator.id.empty()) {
+                partial.id = accumulator.id;
+            }
+
+            const Json::Value& function = tool_delta["function"];
+            if (function.isObject()) {
+                if (function.isMember("name") && function["name"].isString()) {
+                    accumulator.name = function["name"].asString();
+                }
+                if (!accumulator.name.empty()) {
+                    partial.name = accumulator.name;
+                }
+                if (function.isMember("arguments") && function["arguments"].isString()) {
+                    const std::string arguments_chunk = function["arguments"].asString();
+                    if (!arguments_chunk.empty()) {
+                        accumulator.arguments += arguments_chunk;
+                        partial.arguments_json = arguments_chunk;
+                    }
+                }
+            }
+
+            if (!partial.id.empty() || !partial.name.empty() || !partial.arguments_json.empty()) {
+                event.tool_calls_delta.push_back(partial);
+                state.emitted_tool_calls = true;
+                has_payload = true;
+            }
+        }
+    }
+
+    if (!has_payload) {
+        return;
+    }
+
+    if (!state.usage.empty()) {
+        event.usage = state.usage;
+    }
+    dispatch_event(state, event);
+}
+
+size_t openai_stream_write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* state = static_cast<OpenAIStreamState*>(userdata);
+    if (!state || state->error) {
+        return 0;
+    }
+
+    const size_t total_size = size * nmemb;
+    state->buffer.append(ptr, total_size);
+
+    size_t separator_pos = std::string::npos;
+    while ((separator_pos = state->buffer.find("\n\n")) != std::string::npos) {
+        std::string event = state->buffer.substr(0, separator_pos);
+        state->buffer.erase(0, separator_pos + 2);
+
+        if (event.rfind("data:", 0) == 0) {
+            std::string data_payload;
+            std::stringstream ss(event);
+            std::string line;
+            while (std::getline(ss, line)) {
+                if (line.rfind("data:", 0) == 0) {
+                    std::string value = line.substr(5);
+                    if (!data_payload.empty()) {
+                        data_payload.push_back('\n');
+                    }
+                    data_payload += trim_copy(value);
+                }
+            }
+            if (!data_payload.empty()) {
+                process_openai_sse_payload(data_payload, *state);
+                if (state->error) {
+                    return 0;
+                }
+            }
+        }
+    }
+
+    return total_size;
+}
+
+} // namespace
 
 // Helper struct for curl response
 struct CurlResponse {
@@ -80,7 +395,7 @@ OpenAIClient::OpenAIClient(const ClientConfig& config) : LLMClient(config) {
     }
 }
 
-std::string OpenAIClient::chat_completion(const std::vector<Message>& messages) {
+ChatResponse OpenAIClient::chat_completion(const std::vector<Message>& messages) {
     CURL* curl = curl_easy_init();
     if (!curl) {
         throw std::runtime_error("Failed to initialize curl");
@@ -145,21 +460,127 @@ std::string OpenAIClient::chat_completion(const std::vector<Message>& messages) 
         throw std::runtime_error("API Error: " + response_json["error"]["message"].asString());
     }
     
-    return response_json["choices"][0]["message"]["content"].asString();
+    if (!response_json.isMember("choices") || !response_json["choices"].isArray() || response_json["choices"].empty()) {
+        throw std::runtime_error("OpenAI API response missing choices");
+    }
+
+    const Json::Value& choice = response_json["choices"][0];
+    const Json::Value& message = choice["message"];
+    if (!message.isObject()) {
+        throw std::runtime_error("OpenAI API response missing message object");
+    }
+
+    ChatResponse chat_response;
+    chat_response.raw_json = response.data;
+
+    if (response_json.isMember("id") && response_json["id"].isString()) {
+        chat_response.id = response_json["id"].asString();
+    }
+
+    if (message.isMember("content") && message["content"].isString()) {
+        chat_response.assistant_content = message["content"].asString();
+    }
+
+    if (message.isMember("reasoning_content") && message["reasoning_content"].isString()) {
+        chat_response.reasoning = message["reasoning_content"].asString();
+    } else if (message.isMember("reasoning") && message["reasoning"].isString()) {
+        chat_response.reasoning = message["reasoning"].asString();
+    }
+
+    if (message.isMember("tool_calls") && message["tool_calls"].isArray()) {
+        for (const auto& tool_call_json : message["tool_calls"]) {
+            ToolCall call = parse_openai_tool_call(tool_call_json);
+            if (!call.name.empty()) {
+                chat_response.tool_calls.push_back(std::move(call));
+            }
+        }
+    }
+
+    chat_response.usage = parse_usage_metrics(response_json["usage"]);
+    chat_response.text = combine_reasoning_and_text(chat_response.assistant_content, chat_response.reasoning);
+
+    return chat_response;
 }
 
 void OpenAIClient::chat_completion_stream(
     const std::vector<Message>& messages,
-    std::function<void(const std::string&)> callback) {
+    std::function<void(const ChatStreamEvent&)> callback) {
     
-    // For now, implement as non-streaming and call callback once
-    // TODO: Implement proper SSE streaming
-    try {
-        std::string response = chat_completion(messages);
-        callback(response);
-    } catch (const std::exception& e) {
-        logger().error("Streaming completion failed: %s", e.what());
-        throw;
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        throw std::runtime_error("Failed to initialize curl");
+    }
+
+    Json::Value request;
+    request["model"] = config_.model;
+    request["temperature"] = config_.temperature;
+    request["top_p"] = config_.top_p;
+    if (config_.max_tokens > 0) {
+        request["max_tokens"] = config_.max_tokens;
+    }
+
+    Json::Value messages_json(Json::arrayValue);
+    for (const auto& msg : messages) {
+        Json::Value msg_json;
+        msg_json["role"] = msg.role;
+        msg_json["content"] = msg.content;
+        messages_json.append(msg_json);
+    }
+    request["messages"] = messages_json;
+    request["stream"] = true;
+    Json::Value stream_options;
+    stream_options["include_usage"] = true;
+    request["stream_options"] = stream_options;
+
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "";
+    std::string json_string = Json::writeString(builder, request);
+
+    std::string url = config_.api_base + "/chat/completions";
+    struct curl_slist* headers = nullptr;
+    std::string auth_header = "Authorization: Bearer " + config_.api_key;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, auth_header.c_str());
+
+    OpenAIStreamState state;
+    state.callback = std::move(callback);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_string.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(json_string.size()));
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, openai_stream_write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (state.error) {
+        std::rethrow_exception(state.error);
+    }
+
+    if (res != CURLE_OK) {
+        throw std::runtime_error("Curl request failed: " + std::string(curl_easy_strerror(res)));
+    }
+
+    if (!state.done) {
+        ChatStreamEvent done_event;
+        done_event.done = true;
+        if (!state.usage.empty()) {
+            done_event.usage = state.usage;
+        }
+        auto finalized = finalize_tool_calls(state.tool_calls);
+        if (!finalized.empty()) {
+            done_event.tool_calls_delta = std::move(finalized);
+        }
+        dispatch_event(state, done_event);
+        if (state.error) {
+            std::rethrow_exception(state.error);
+        }
     }
 }
 
@@ -233,7 +654,7 @@ ClaudeClient::ClaudeClient(const ClientConfig& config) : LLMClient(config) {
     }
 }
 
-std::string ClaudeClient::chat_completion(const std::vector<Message>& messages) {
+ChatResponse ClaudeClient::chat_completion(const std::vector<Message>& messages) {
     CURL* curl = curl_easy_init();
     if (!curl) {
         throw std::runtime_error("Failed to initialize curl");
@@ -309,36 +730,70 @@ std::string ClaudeClient::chat_completion(const std::vector<Message>& messages) 
         throw std::runtime_error("Claude API Error: " + response_json["error"]["message"].asString());
     }
     
-    // Extract message content from Claude response
-    if (response_json.isMember("content") && response_json["content"].isArray() && 
-        response_json["content"].size() > 0) {
-        return response_json["content"][0]["text"].asString();
+    if (!response_json.isMember("content") || !response_json["content"].isArray()) {
+        throw std::runtime_error("Unexpected Claude API response format");
     }
-    
-    throw std::runtime_error("Unexpected Claude API response format");
+
+    ChatResponse chat_response;
+    chat_response.raw_json = response.data;
+
+    if (response_json.isMember("id") && response_json["id"].isString()) {
+        chat_response.id = response_json["id"].asString();
+    }
+
+    std::string aggregated_text;
+    const Json::Value& content_array = response_json["content"];
+    for (const auto& item : content_array) {
+        if (!item.isObject()) {
+            continue;
+        }
+        const std::string item_type = item.get("type", "").asString();
+        if (item.isMember("text") && item["text"].isString()) {
+            aggregated_text += item["text"].asString();
+        } else if (item_type == "tool_use") {
+            ToolCall call;
+            call.id = item.get("id", "").asString();
+            call.name = item.get("name", "").asString();
+            if (item.isMember("input")) {
+                Json::StreamWriterBuilder builder;
+                call.arguments_json = Json::writeString(builder, item["input"]);
+            }
+            if (!call.name.empty()) {
+                chat_response.tool_calls.push_back(std::move(call));
+            }
+        }
+    }
+
+    chat_response.assistant_content = aggregated_text;
+    chat_response.text = combine_reasoning_and_text(chat_response.assistant_content, chat_response.reasoning);
+    chat_response.usage = parse_usage_metrics(response_json["usage"]);
+
+    return chat_response;
 }
 
 void ClaudeClient::chat_completion_stream(
     const std::vector<Message>& messages,
-    std::function<void(const std::string&)> callback) {
+    std::function<void(const ChatStreamEvent&)> callback) {
     
-    // For now, implement non-streaming version and call callback with chunks
-    // TODO: Implement actual streaming using Server-Sent Events
-    try {
-        std::string response = chat_completion(messages);
-        
-        // Simulate streaming by sending response in chunks
-        const size_t chunk_size = 50;
-        for (size_t i = 0; i < response.length(); i += chunk_size) {
-            std::string chunk = response.substr(i, chunk_size);
-            callback(chunk);
-            
-            // Small delay to simulate streaming
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Claude streaming error: " + std::string(e.what()));
+    ChatResponse response = chat_completion(messages);
+
+    if (!response.reasoning.empty()) {
+        ChatStreamEvent reasoning_event;
+        reasoning_event.reasoning_delta = response.reasoning;
+        callback(reasoning_event);
     }
+
+    ChatStreamEvent text_event;
+    text_event.text_delta = response.assistant_content;
+    text_event.tool_calls_delta = response.tool_calls;
+    callback(text_event);
+
+    ChatStreamEvent done_event;
+    done_event.done = true;
+    if (!response.usage.empty()) {
+        done_event.usage = response.usage;
+    }
+    callback(done_event);
 }
 
 std::vector<double> ClaudeClient::embeddings(const std::string& text) {
@@ -354,7 +809,7 @@ GeminiClient::GeminiClient(const ClientConfig& config) : LLMClient(config) {
     }
 }
 
-std::string GeminiClient::chat_completion(const std::vector<Message>& messages) {
+ChatResponse GeminiClient::chat_completion(const std::vector<Message>& messages) {
     CURL* curl = curl_easy_init();
     if (!curl) {
         throw std::runtime_error("Failed to initialize curl");
@@ -432,38 +887,71 @@ std::string GeminiClient::chat_completion(const std::vector<Message>& messages) 
         throw std::runtime_error("Gemini API Error: " + response_json["error"]["message"].asString());
     }
     
-    // Extract message content from Gemini response
-    if (response_json.isMember("candidates") && response_json["candidates"].isArray() && 
-        response_json["candidates"].size() > 0) {
-        const Json::Value& candidate = response_json["candidates"][0];
-        if (candidate.isMember("content") && candidate["content"].isMember("parts") &&
-            candidate["content"]["parts"].isArray() && candidate["content"]["parts"].size() > 0) {
-            return candidate["content"]["parts"][0]["text"].asString();
+    if (!response_json.isMember("candidates") || !response_json["candidates"].isArray() || response_json["candidates"].empty()) {
+        throw std::runtime_error("Unexpected Gemini API response format");
+    }
+
+    ChatResponse chat_response;
+    chat_response.raw_json = response.data;
+
+    const Json::Value& candidate = response_json["candidates"][0];
+    if (candidate.isMember("content") && candidate["content"].isMember("parts") &&
+        candidate["content"]["parts"].isArray()) {
+        const Json::Value& parts = candidate["content"]["parts"];
+        for (const auto& part : parts) {
+            if (!part.isObject()) {
+                continue;
+            }
+            if (part.isMember("text") && part["text"].isString()) {
+                chat_response.assistant_content += part["text"].asString();
+            } else if (part.isMember("functionCall") && part["functionCall"].isObject()) {
+                const Json::Value& function_call = part["functionCall"];
+                ToolCall call;
+                call.name = function_call.get("name", "").asString();
+                if (function_call.isMember("args")) {
+                    Json::StreamWriterBuilder builder;
+                    call.arguments_json = Json::writeString(builder, function_call["args"]);
+                }
+                if (!call.name.empty()) {
+                    chat_response.tool_calls.push_back(std::move(call));
+                }
+            }
         }
     }
-    
-    throw std::runtime_error("Unexpected Gemini API response format");
+
+    if (candidate.isMember("safetyRatings") && candidate["safetyRatings"].isArray()) {
+        // Gemini may include reasoning-like data; leave placeholder for future extension
+    }
+
+    chat_response.text = combine_reasoning_and_text(chat_response.assistant_content, chat_response.reasoning);
+    chat_response.usage = parse_usage_metrics(response_json["usageMetadata"]);
+
+    return chat_response;
 }
 
 void GeminiClient::chat_completion_stream(
     const std::vector<Message>& messages,
-    std::function<void(const std::string&)> callback) {
+    std::function<void(const ChatStreamEvent&)> callback) {
     
-    // For now, implement non-streaming version and call callback with chunks
-    // TODO: Implement actual streaming
-    try {
-        std::string response = chat_completion(messages);
-        
-        // Simulate streaming by sending response in chunks
-        const size_t chunk_size = 50;
-        for (size_t i = 0; i < response.length(); i += chunk_size) {
-            std::string chunk = response.substr(i, chunk_size);
-            callback(chunk);
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Gemini streaming error: " + std::string(e.what()));
+    ChatResponse response = chat_completion(messages);
+
+    if (!response.reasoning.empty()) {
+        ChatStreamEvent reasoning_event;
+        reasoning_event.reasoning_delta = response.reasoning;
+        callback(reasoning_event);
     }
+
+    ChatStreamEvent text_event;
+    text_event.text_delta = response.assistant_content;
+    text_event.tool_calls_delta = response.tool_calls;
+    callback(text_event);
+
+    ChatStreamEvent done_event;
+    done_event.done = true;
+    if (!response.usage.empty()) {
+        done_event.usage = response.usage;
+    }
+    callback(done_event);
 }
 
 std::vector<double> GeminiClient::embeddings(const std::string& text) {
@@ -479,7 +967,7 @@ OllamaClient::OllamaClient(const ClientConfig& config) : LLMClient(config) {
     }
 }
 
-std::string OllamaClient::chat_completion(const std::vector<Message>& messages) {
+ChatResponse OllamaClient::chat_completion(const std::vector<Message>& messages) {
     CURL* curl = curl_easy_init();
     if (!curl) {
         throw std::runtime_error("Failed to initialize curl");
@@ -538,34 +1026,65 @@ std::string OllamaClient::chat_completion(const std::vector<Message>& messages) 
         throw std::runtime_error("Ollama API Error: " + response_json["error"]["message"].asString());
     }
     
-    // Extract message content from OpenAI-compatible response
-    if (response_json.isMember("choices") && response_json["choices"].isArray() && 
-        response_json["choices"].size() > 0) {
-        return response_json["choices"][0]["message"]["content"].asString();
+    if (!response_json.isMember("choices") || !response_json["choices"].isArray() || response_json["choices"].empty()) {
+        throw std::runtime_error("Unexpected Ollama API response format");
     }
-    
-    throw std::runtime_error("Unexpected Ollama API response format");
+
+    const Json::Value& choice = response_json["choices"][0];
+    const Json::Value& message = choice["message"];
+    if (!message.isObject()) {
+        throw std::runtime_error("Ollama API response missing message object");
+    }
+
+    ChatResponse chat_response;
+    chat_response.raw_json = response.data;
+
+    if (response_json.isMember("id") && response_json["id"].isString()) {
+        chat_response.id = response_json["id"].asString();
+    }
+
+    if (message.isMember("content") && message["content"].isString()) {
+        chat_response.assistant_content = message["content"].asString();
+    }
+
+    if (message.isMember("tool_calls") && message["tool_calls"].isArray()) {
+        for (const auto& tool_call_json : message["tool_calls"]) {
+            ToolCall call = parse_openai_tool_call(tool_call_json);
+            if (!call.name.empty()) {
+                chat_response.tool_calls.push_back(std::move(call));
+            }
+        }
+    }
+
+    chat_response.usage = parse_usage_metrics(response_json["usage"]);
+    chat_response.text = combine_reasoning_and_text(chat_response.assistant_content, chat_response.reasoning);
+
+    return chat_response;
 }
 
 void OllamaClient::chat_completion_stream(
     const std::vector<Message>& messages,
-    std::function<void(const std::string&)> callback) {
+    std::function<void(const ChatStreamEvent&)> callback) {
     
-    // For now, implement non-streaming version and call callback with chunks
-    // TODO: Implement actual streaming
-    try {
-        std::string response = chat_completion(messages);
-        
-        // Simulate streaming by sending response in chunks
-        const size_t chunk_size = 50;
-        for (size_t i = 0; i < response.length(); i += chunk_size) {
-            std::string chunk = response.substr(i, chunk_size);
-            callback(chunk);
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Ollama streaming error: " + std::string(e.what()));
+    ChatResponse response = chat_completion(messages);
+
+    if (!response.reasoning.empty()) {
+        ChatStreamEvent reasoning_event;
+        reasoning_event.reasoning_delta = response.reasoning;
+        callback(reasoning_event);
     }
+
+    ChatStreamEvent text_event;
+    text_event.text_delta = response.assistant_content;
+    text_event.tool_calls_delta = response.tool_calls;
+    callback(text_event);
+
+    ChatStreamEvent done_event;
+    done_event.done = true;
+    if (!response.usage.empty()) {
+        done_event.usage = response.usage;
+    }
+    callback(done_event);
 }
 
 std::vector<double> OllamaClient::embeddings(const std::string& text) {
@@ -581,7 +1100,7 @@ GroqClient::GroqClient(const ClientConfig& config) : LLMClient(config) {
     }
 }
 
-std::string GroqClient::chat_completion(const std::vector<Message>& messages) {
+ChatResponse GroqClient::chat_completion(const std::vector<Message>& messages) {
     CURL* curl = curl_easy_init();
     if (!curl) {
         throw std::runtime_error("Failed to initialize curl");
@@ -646,34 +1165,65 @@ std::string GroqClient::chat_completion(const std::vector<Message>& messages) {
         throw std::runtime_error("Groq API Error: " + response_json["error"]["message"].asString());
     }
     
-    // Extract message content from OpenAI-compatible response
-    if (response_json.isMember("choices") && response_json["choices"].isArray() && 
-        response_json["choices"].size() > 0) {
-        return response_json["choices"][0]["message"]["content"].asString();
+    if (!response_json.isMember("choices") || !response_json["choices"].isArray() || response_json["choices"].empty()) {
+        throw std::runtime_error("Unexpected Groq API response format");
     }
-    
-    throw std::runtime_error("Unexpected Groq API response format");
+
+    const Json::Value& choice = response_json["choices"][0];
+    const Json::Value& message = choice["message"];
+    if (!message.isObject()) {
+        throw std::runtime_error("Groq API response missing message object");
+    }
+
+    ChatResponse chat_response;
+    chat_response.raw_json = response.data;
+
+    if (response_json.isMember("id") && response_json["id"].isString()) {
+        chat_response.id = response_json["id"].asString();
+    }
+
+    if (message.isMember("content") && message["content"].isString()) {
+        chat_response.assistant_content = message["content"].asString();
+    }
+
+    if (message.isMember("tool_calls") && message["tool_calls"].isArray()) {
+        for (const auto& tool_call_json : message["tool_calls"]) {
+            ToolCall call = parse_openai_tool_call(tool_call_json);
+            if (!call.name.empty()) {
+                chat_response.tool_calls.push_back(std::move(call));
+            }
+        }
+    }
+
+    chat_response.usage = parse_usage_metrics(response_json["usage"]);
+    chat_response.text = combine_reasoning_and_text(chat_response.assistant_content, chat_response.reasoning);
+
+    return chat_response;
 }
 
 void GroqClient::chat_completion_stream(
     const std::vector<Message>& messages,
-    std::function<void(const std::string&)> callback) {
+    std::function<void(const ChatStreamEvent&)> callback) {
     
-    // For now, implement non-streaming version and call callback with chunks
-    // TODO: Implement actual streaming
-    try {
-        std::string response = chat_completion(messages);
-        
-        // Simulate streaming by sending response in chunks
-        const size_t chunk_size = 50;
-        for (size_t i = 0; i < response.length(); i += chunk_size) {
-            std::string chunk = response.substr(i, chunk_size);
-            callback(chunk);
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Groq streaming error: " + std::string(e.what()));
+    ChatResponse response = chat_completion(messages);
+
+    if (!response.reasoning.empty()) {
+        ChatStreamEvent reasoning_event;
+        reasoning_event.reasoning_delta = response.reasoning;
+        callback(reasoning_event);
     }
+
+    ChatStreamEvent text_event;
+    text_event.text_delta = response.assistant_content;
+    text_event.tool_calls_delta = response.tool_calls;
+    callback(text_event);
+
+    ChatStreamEvent done_event;
+    done_event.done = true;
+    if (!response.usage.empty()) {
+        done_event.usage = response.usage;
+    }
+    callback(done_event);
 }
 
 std::vector<double> GroqClient::embeddings(const std::string& text) {
@@ -761,18 +1311,23 @@ std::string GGMLClient::get_model_info() const {
     return model_info_;
 }
 
-std::string GGMLClient::chat_completion(const std::vector<Message>& messages) {
+ChatResponse GGMLClient::chat_completion(const std::vector<Message>& messages) {
     if (!model_loaded_) {
         throw std::runtime_error("No GGML model loaded");
     }
     
     std::string prompt = format_messages_for_ggml(messages);
-    return run_ggml_inference(prompt);
+    std::string output = run_ggml_inference(prompt);
+    
+    ChatResponse response;
+    response.assistant_content = output;
+    response.text = output;
+    return response;
 }
 
 void GGMLClient::chat_completion_stream(
     const std::vector<Message>& messages,
-    std::function<void(const std::string&)> callback) {
+    std::function<void(const ChatStreamEvent&)> callback) {
     
     if (!model_loaded_) {
         throw std::runtime_error("No GGML model loaded");
@@ -780,15 +1335,30 @@ void GGMLClient::chat_completion_stream(
     
     // For now, implement non-streaming version with chunked output
     // In a real implementation, this would use streaming inference
-    std::string response = chat_completion(messages);
+    ChatResponse response = chat_completion(messages);
+    const std::string& text = response.assistant_content;
     
     // Simulate streaming by sending response in chunks
     const size_t chunk_size = 20;
-    for (size_t i = 0; i < response.length(); i += chunk_size) {
-        std::string chunk = response.substr(i, chunk_size);
-        callback(chunk);
+    for (size_t i = 0; i < text.length(); i += chunk_size) {
+        ChatStreamEvent event;
+        event.text_delta = text.substr(i, chunk_size);
+        callback(event);
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
     }
+
+    if (!response.tool_calls.empty()) {
+        ChatStreamEvent tools_event;
+        tools_event.tool_calls_delta = response.tool_calls;
+        callback(tools_event);
+    }
+
+    ChatStreamEvent done_event;
+    done_event.done = true;
+    if (!response.usage.empty()) {
+        done_event.usage = response.usage;
+    }
+    callback(done_event);
 }
 
 std::vector<double> GGMLClient::embeddings(const std::string& text) {
@@ -857,7 +1427,7 @@ std::string GGMLClient::cognitive_completion(const std::vector<Message>& message
         "Focus on structured, logical representations of knowledge.");
     enhanced_messages.insert(enhanced_messages.begin(), cognitive_instruction);
     
-    return chat_completion(enhanced_messages);
+    return chat_completion(enhanced_messages).text;
 }
 
 bool GGMLClient::init_ggml_context() {
