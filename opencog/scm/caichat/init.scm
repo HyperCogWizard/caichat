@@ -29,6 +29,9 @@
            caichat-map-opencog-api
            caichat-neural-symbolic-bridge
            caichat-audit-core-modules
+           ;; Session persistence and mediation (issue: mediate-session)
+           caichat-create-persistent-session
+           caichat-resume-session
            caichat-mediate-session)
 
 ;; Module initialization

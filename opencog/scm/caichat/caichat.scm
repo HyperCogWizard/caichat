@@ -41,7 +41,13 @@
         caichat-init-llm-provider
         caichat-route-llm-request
         caichat-propagate-patterns
-        caichat-map-opencog-api)
+        caichat-map-opencog-api
+        ;; Session persistence and mediation (issue: mediate-session)
+        caichat-create-persistent-session
+        caichat-resume-session
+        caichat-mediate-session
+        caichat-audit-core-modules
+        caichat-neural-symbolic-bridge)
 
 ;; Configuration storage
 (define caichat-configs (make-hash-table))
@@ -124,18 +130,12 @@
 ;;
 ;; Advanced conversation management
 ;;
-
-(define (caichat-create-persistent-session session-name provider model)
-  "Create a session that will be saved to AtomSpace"
-  (let ((session-id (caichat-start-session provider model)))
-    (caichat-save-conversation session-id session-name)
-    session-id))
-
-(define (caichat-resume-session session-name provider model)
-  "Resume a previously saved session"
-  (let ((session-id (caichat-start-session provider model)))
-    (caichat-load-conversation session-id session-name)
-    session-id))
+;; Note: caichat-create-persistent-session, caichat-resume-session,
+;; caichat-mediate-session, caichat-audit-core-modules, and
+;; caichat-neural-symbolic-bridge are provided by the C++ SessionManager
+;; and NeuralSymbolicBridge (loaded via load-extension above).
+;; They are exported directly so callers use the C++ implementations that
+;; support file-based persistence and hypergraph memory synergization.
 
 ;;
 ;; Integration with OpenCog reasoning

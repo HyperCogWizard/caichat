@@ -15,6 +15,7 @@
 #include <map>
 #include <vector>
 #include <ctime>
+#include <fstream>
 
 #ifdef HAVE_OPENCOG
 #include <opencog/atomspace/AtomSpace.h>
@@ -46,6 +47,7 @@ public:
         size_t message_count;
         bool is_persistent;
         Handle session_atom;  // AtomSpace handle if using OpenCog
+        std::vector<Message> restored_messages;  // Messages restored from file
     };
     
     SessionManager(AtomSpace* atomspace = nullptr);
@@ -141,6 +143,8 @@ private:
     AtomSpace* atomspace_;
     std::map<std::string, std::unique_ptr<ChatCompletion>> sessions_;
     std::map<std::string, SessionMetadata> session_metadata_;
+    std::map<std::string, std::string> session_name_to_id_;  // maps session_name -> session_id
+    std::map<std::string, std::string> session_id_to_name_;  // maps session_id -> session_name
     LLMProviderRouter router_;
     
     /**
@@ -157,6 +161,23 @@ private:
      * Load session from AtomSpace (if available)
      */
     SessionMetadata load_session_from_atomspace(const std::string& session_name);
+    
+    /**
+     * Persist session metadata and messages to a JSON file
+     * File is stored in ~/.caichat/sessions/<session_name>.json
+     */
+    void persist_session_to_file(const std::string& session_id, const std::string& session_name);
+    
+    /**
+     * Load session metadata and messages from a JSON file
+     * Returns empty metadata if file not found
+     */
+    SessionMetadata load_session_from_file(const std::string& session_name);
+    
+    /**
+     * Get the file system path for a named session
+     */
+    std::string get_session_file_path(const std::string& session_name);
     
     /**
      * Encode session patterns into hypergraph

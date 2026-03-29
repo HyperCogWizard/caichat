@@ -6,10 +6,17 @@
 
 #include "SessionManager.h"
 #include <ctime>
+#include <cstdlib>
+#include <cstring>
+#include <cerrno>
 #include <sstream>
 #include <regex>
 #include <random>
 #include <iomanip>
+#include <fstream>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <json/json.h>
 
 #ifdef HAVE_OPENCOG
 #include <opencog/atoms/base/Node.h>
@@ -81,6 +88,10 @@ std::string SessionManager::create_persistent_session(const std::string& session
         sessions_[session_id] = std::move(completion);
         session_metadata_[session_id] = metadata;
         
+        // Track bidirectional name <-> id mapping for file-based persistence
+        session_name_to_id_[session_name] = session_id;
+        session_id_to_name_[session_id]   = session_name;
+        
         // Establish hypergraph links for cognitive synergy
         establish_hypergraph_link(session_id, metadata.session_atom);
         
@@ -95,6 +106,9 @@ std::string SessionManager::create_persistent_session(const std::string& session
         }
 #endif
         
+        // Persist to file for cross-process recovery
+        persist_session_to_file(session_id, session_name);
+        
         return session_id;
     } catch (const std::exception& e) {
         throw std::runtime_error("Failed to create persistent session: " + std::string(e.what()));
@@ -104,9 +118,20 @@ std::string SessionManager::create_persistent_session(const std::string& session
 std::string SessionManager::resume_session(const std::string& session_name, 
                                           const std::string& provider, 
                                           const std::string& model) {
+    // First check in-memory name mapping
+    auto name_it = session_name_to_id_.find(session_name);
+    if (name_it != session_name_to_id_.end()) {
+        const std::string& existing_id = name_it->second;
+        auto meta_it = session_metadata_.find(existing_id);
+        if (meta_it != session_metadata_.end()) {
+            meta_it->second.last_accessed = std::time(nullptr);
+            return existing_id;
+        }
+    }
+
 #ifdef HAVE_OPENCOG
     if (atomspace_) {
-        // Try to find existing session by name
+        // Try to find existing session by name in AtomSpace
         Handle name_node = atomspace_->get_node(CONCEPT_NODE, "session_name:" + session_name);
         if (name_node != Handle::UNDEFINED) {
             // Load existing session
@@ -115,6 +140,8 @@ std::string SessionManager::resume_session(const std::string& session_name,
                 // Update last accessed time
                 metadata.last_accessed = std::time(nullptr);
                 session_metadata_[metadata.session_id] = metadata;
+                session_name_to_id_[session_name] = metadata.session_id;
+                session_id_to_name_[metadata.session_id] = session_name;
                 
                 return metadata.session_id;
             }
@@ -122,7 +149,45 @@ std::string SessionManager::resume_session(const std::string& session_name,
     }
 #endif
     
-    // If no existing session found, create new one
+    // Try to load from file system
+    SessionMetadata file_metadata = load_session_from_file(session_name);
+    if (!file_metadata.session_id.empty()) {
+        file_metadata.last_accessed = std::time(nullptr);
+        session_metadata_[file_metadata.session_id] = file_metadata;
+        session_name_to_id_[session_name] = file_metadata.session_id;
+        session_id_to_name_[file_metadata.session_id] = session_name;
+        
+        // Recreate the completion session using stored provider/model
+        ClientConfig config;
+        config.provider = file_metadata.provider;
+        config.model = file_metadata.model;
+        try {
+            auto client = create_client(config);
+            auto completion = std::make_unique<ChatCompletion>(atomspace_, std::move(client));
+            // Restore messages
+            for (const auto& msg : file_metadata.restored_messages) {
+                completion->add_message(msg.role, msg.content);
+            }
+            sessions_[file_metadata.session_id] = std::move(completion);
+        } catch (const std::exception& e) {
+            // Session metadata loaded but completion creation failed; return ID anyway
+#ifdef HAVE_OPENCOG
+            logger().warn("Failed to recreate completion for resumed session '%s': %s",
+                          session_name.c_str(), e.what());
+#else
+            std::cerr << "Warning: Failed to recreate completion for resumed session '"
+                      << session_name << "': " << e.what() << std::endl;
+#endif
+        }
+        
+#ifndef HAVE_OPENCOG
+        std::cout << "Resumed persistent session '" << session_name
+                  << "' (id=" << file_metadata.session_id << ") from file." << std::endl;
+#endif
+        return file_metadata.session_id;
+    }
+    
+    // If no existing session found, create a new one
     return create_persistent_session(session_name, provider, model);
 }
 
@@ -141,9 +206,9 @@ void SessionManager::mediate_session(const std::string& session_id) {
                 it->second.message_count = session_it->second->get_messages().size();
             }
         }
-    } else {
-        persist_session(session_id);
     }
+    // Always persist to file during mediation (active or not)
+    persist_session(session_id);
 }
 
 void SessionManager::audit_core_modules() {
@@ -215,8 +280,7 @@ void SessionManager::update_hypergraph_memory(const std::string& session_id) {
 void SessionManager::persist_session(const std::string& session_id) {
     auto it = session_metadata_.find(session_id);
     if (it != session_metadata_.end() && it->second.is_persistent) {
-        // In a full implementation, this would save to file system or database
-        // For now, we keep it in AtomSpace if available
+        // Update hypergraph memory (if AtomSpace is available)
         update_hypergraph_memory(session_id);
         
 #ifdef HAVE_OPENCOG
@@ -228,6 +292,12 @@ void SessionManager::persist_session(const std::string& session_id) {
                     atomspace_->add_node(CONCEPT_NODE, "true")));
         }
 #endif
+        
+        // Look up the session name via the reverse map for O(1) file persistence
+        auto name_it = session_id_to_name_.find(session_id);
+        if (name_it != session_id_to_name_.end()) {
+            persist_session_to_file(session_id, name_it->second);
+        }
     }
 }
 
@@ -361,6 +431,131 @@ SessionManager::SessionMetadata SessionManager::load_session_from_atomspace(cons
         }
     }
 #endif
+    
+    return metadata;
+}
+
+std::string SessionManager::get_session_file_path(const std::string& session_name) {
+    // Build path: ~/.caichat/sessions/<session_name>.json
+    std::string home_dir;
+    const char* home = std::getenv("HOME");
+    if (home) {
+        home_dir = home;
+    } else {
+        home_dir = "/tmp";
+    }
+    
+    std::string sessions_dir = home_dir + "/.caichat/sessions";
+    
+    // Ensure directories exist (attempt creation; EEXIST is not an error)
+    if (mkdir((home_dir + "/.caichat").c_str(), 0700) != 0 && errno != EEXIST) {
+#ifndef HAVE_OPENCOG
+        std::cerr << "Failed to create directory: " << home_dir + "/.caichat"
+                  << " (" << std::strerror(errno) << ")" << std::endl;
+#endif
+    }
+    if (mkdir(sessions_dir.c_str(), 0700) != 0 && errno != EEXIST) {
+#ifndef HAVE_OPENCOG
+        std::cerr << "Failed to create directory: " << sessions_dir
+                  << " (" << std::strerror(errno) << ")" << std::endl;
+#endif
+    }
+    
+    return sessions_dir + "/" + session_name + ".json";
+}
+
+void SessionManager::persist_session_to_file(const std::string& session_id,
+                                             const std::string& session_name) {
+    auto meta_it = session_metadata_.find(session_id);
+    if (meta_it == session_metadata_.end()) {
+        return;
+    }
+    const SessionMetadata& metadata = meta_it->second;
+    
+    Json::Value root(Json::objectValue);
+    root["session_id"]    = metadata.session_id;
+    root["session_name"]  = session_name;
+    root["provider"]      = metadata.provider;
+    root["model"]         = metadata.model;
+    root["created_at"]    = static_cast<Json::Int64>(metadata.created_at);
+    root["last_accessed"] = static_cast<Json::Int64>(metadata.last_accessed);
+    root["message_count"] = Json::UInt64(metadata.message_count);
+    root["is_persistent"] = metadata.is_persistent;
+    
+    // Serialize conversation messages
+    Json::Value messages(Json::arrayValue);
+    auto session_it = sessions_.find(session_id);
+    if (session_it != sessions_.end()) {
+        for (const auto& msg : session_it->second->get_messages()) {
+            Json::Value msg_json(Json::objectValue);
+            msg_json["role"]    = msg.role;
+            msg_json["content"] = msg.content;
+            messages.append(msg_json);
+        }
+    }
+    root["messages"] = messages;
+    
+    std::string file_path = get_session_file_path(session_name);
+    std::ofstream ofs(file_path);
+    if (ofs.is_open()) {
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "  ";
+        ofs << Json::writeString(builder, root);
+        ofs.close();
+#ifndef HAVE_OPENCOG
+        std::cout << "Session '" << session_name << "' persisted to " << file_path << std::endl;
+#endif
+    } else {
+#ifndef HAVE_OPENCOG
+        std::cerr << "Failed to persist session '" << session_name
+                  << "' to " << file_path << std::endl;
+#endif
+    }
+}
+
+SessionManager::SessionMetadata SessionManager::load_session_from_file(
+        const std::string& session_name) {
+    SessionMetadata metadata;
+    
+    std::string file_path = get_session_file_path(session_name);
+    std::ifstream ifs(file_path);
+    if (!ifs.is_open()) {
+        return metadata;  // File does not exist
+    }
+    
+    Json::Value root;
+    Json::CharReaderBuilder reader;
+    std::string errors;
+    if (!Json::parseFromStream(reader, ifs, &root, &errors)) {
+#ifndef HAVE_OPENCOG
+        std::cerr << "Failed to parse session file '" << file_path
+                  << "': " << errors << std::endl;
+#endif
+        return metadata;
+    }
+    ifs.close();
+    
+    metadata.session_id    = root.get("session_id", "").asString();
+    metadata.provider      = root.get("provider", "").asString();
+    metadata.model         = root.get("model", "").asString();
+    metadata.created_at    = static_cast<std::time_t>(root.get("created_at", 0).asInt64());
+    metadata.last_accessed = static_cast<std::time_t>(root.get("last_accessed", 0).asInt64());
+    metadata.message_count = static_cast<size_t>(root.get("message_count", 0).asUInt64());
+    metadata.is_persistent = root.get("is_persistent", true).asBool();
+#ifdef HAVE_OPENCOG
+    metadata.session_atom  = Handle::UNDEFINED;
+#else
+    metadata.session_atom  = nullptr;
+#endif
+    
+    // Restore messages for later replay into the completion session
+    if (root.isMember("messages") && root["messages"].isArray()) {
+        for (const auto& msg_json : root["messages"]) {
+            Message msg(msg_json.get("role", "").asString(),
+                        msg_json.get("content", "").asString());
+            metadata.restored_messages.push_back(msg);
+        }
+    }
     
     return metadata;
 }
